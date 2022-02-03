@@ -1017,8 +1017,13 @@ class QMTools:
 	kernelQDiffRel = source.get_function('gpu_qdiff_rel')
 	kernelQDiffRel.prepare([ numpy.intp, numpy.intp, numpy.intp ])
 
+	# computes density grid from density matrix
 	fker = open('kernel_density.cu')
 	srcDensity = fker.read(); fker.close()
+
+	# computes hartree potential grid from density grid
+	fker = open('kernel_hartree.cu')
+	srcHartree = fker.read(); fker.close()
 
 	fker = open('kernel_automaton.cu')
 	srcAutomaton = fker.read(); fker.close()
@@ -1068,6 +1073,52 @@ class QMTools:
 			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
 
 		return cgrid
+
+	### Compute the hartree potential on the grid, for a given charge density grid
+	###
+	def Compute_hartree_fromGrid(qgrid, vgrid, copyBack=True):
+
+		print("preparing hartree kernel")
+		kernel = QMTools.srcHartree
+
+		# Q grid
+		kernel = kernel.replace('PYCUDA_GRID_STEP', str(qgrid.step)+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_X0', str(qgrid.origin['x'])+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Y0', str(qgrid.origin['y'])+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Z0', str(qgrid.origin['z'])+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_NX', str(qgrid.GPUblocks[0]))
+		kernel = kernel.replace('PYCUDA_GRID_NY', str(qgrid.GPUblocks[1]))
+		kernel = kernel.replace('PYCUDA_GRID_NZ', str(qgrid.GPUblocks[2]))
+
+
+		# V grid
+		kernel = kernel.replace('PYCUDA_VGRID_STEP', str(vgrid.step)+"f")
+		kernel = kernel.replace('PYCUDA_VGRID_X0', str(vgrid.origin['x'])+"f")
+		kernel = kernel.replace('PYCUDA_VGRID_Y0', str(vgrid.origin['y'])+"f")
+		kernel = kernel.replace('PYCUDA_VGRID_Z0', str(vgrid.origin['z'])+"f")
+
+
+		print("print kernel:")
+		print(kernel)
+
+		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		kernel = kernel.get_function("gpu_hartree_noAtoms")
+		kernel.prepare([numpy.intp, numpy.intp])
+
+		
+		print("computing hartree grid from qube", vgrid.GPUblocks)
+
+		kernel.prepared_call(vgrid.GPUblocks, (8,8,8),
+			qgrid.d_qube,
+			vgrid.d_qube
+		)
+		
+		if copyBack:
+			cuda.memcpy_dtoh(vgrid.qube, vgrid.d_qube)
+
+
 
 	### Compute the starting guess for the electron density.
 	# The input grid is only a template.
