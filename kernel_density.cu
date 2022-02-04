@@ -70,6 +70,8 @@ __global__ __launch_bounds__(512, 2) void gpu_densityqube_shmem_subgrid(
 
 		// load DM row in shmem
 		if(sidx < NORBS) shDM[sidx] = dm[sidx + p*NORBS];
+
+		// load info of p-th orbital
 		if(sidx < MAXAOC) {
 			shALPHAp[sidx] = alphas[shALMOs[p].w+sidx];
 			shCOEFFp[sidx] = coeffs[shALMOs[p].w+sidx];

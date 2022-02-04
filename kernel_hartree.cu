@@ -1,5 +1,7 @@
 #include "kernel_common.h"
 
+#define NATM PYCUDA_NATOMS
+
 #define STEP PYCUDA_GRID_STEP
 #define X0 PYCUDA_GRID_X0
 #define Y0 PYCUDA_GRID_Y0
@@ -16,25 +18,31 @@
 
 
 
+
 // direct integration kernel - debug function, ignores atomic nuclei
 __global__ void __launch_bounds__(512, 4) gpu_hartree_noAtoms(
 	float* 		q,			// density grid
-	float*		V 			// output hartree qube	
+	float*		V, 			// output hartree qube
+	int* 		types,
+	float3*		coords 		// atom coordinates in BOHR
 ){
 
-	//__shared__ int styp[100];
-	//__shared__ float3 scoords[100];
+	volatile __shared__ int styp[100];
+	volatile __shared__ float3 scoords[100];
 	volatile __shared__ float sQ[B_3];
 
 
 	volatile uint sidx = threadIdx.x + threadIdx.y * B + threadIdx.z * B_2;
 	volatile uint ridx;
 
-	/*if(sidx < natoms) {
+	if(sidx < NATM) {
 		styp[sidx] = types[sidx];
-		scoords[sidx] = coords[sidx];
+		volatile float3 tmp = coords[sidx];
+		scoords[sidx].x = tmp.x;
+		scoords[sidx].y = tmp.y;
+		scoords[sidx].z = tmp.z;
 	}
-	__syncthreads();*/
+	__syncthreads();
 
 	volatile float hartree = 0;
 	volatile float c,r;
@@ -60,7 +68,6 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_noAtoms(
 				__syncthreads();
 				// now we have the patch... loop!
 
-
 				for(uint sx=0; sx<B; ++sx) {
 					for(uint sy=0; sy<B; ++sy) {
 						for(uint sz=0; sz<B; ++sz) {
@@ -74,16 +81,6 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_noAtoms(
 							c = V_pos.z - (Z0 + (z*B + sz) * STEP + 0.5f*STEP);
 							r+= c*c;
 							r = sqrtf(r);
-
-							/*ridx = (threadIdx.x + blockIdx.x*B);
-							ridx+= (threadIdx.y + blockIdx.y*B) * gridDim.x * B;
-							ridx+= (threadIdx.z + blockIdx.z*B) * gridDim.x * gridDim.y * B_2;
-							if(ridx == 0){
-								printf("%f %f %f - %f %f %f -- %f --- %i %i %i %i %i %i ---- %f\n",V_pos.x,V_pos.y,V_pos.z,
-									(X0 + (x*B + sx) * STEP + 0.5f*STEP),(Y0 + (y*B + sy) * STEP + 0.5f*STEP),(Z0 + (z*B + sz) * STEP + 0.5f*STEP),r,
-									x,y,z,sx,sy,sz, hartree
-									);
-							}*/
 
 							if(r < 0.5f*STEP) 
 								hartree += (sQ[sx + sy*B + sz*B_2]/STEP) * (3.0f - 4.0f*r*r/(STEP*STEP)); // assume uniform charge sphere if V point is in the same voxel as Q
@@ -99,11 +96,8 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_noAtoms(
 
 	hartree = -hartree; // because electrons are negative!
 
-	/*
 	// add the nuclear potential
-	for(ushort i=0; i<natoms; i++) {
-
-		float c, r=0; // distance between the V evaluation point and the q voxel center
+	for(ushort i=0; i<NATM; i++) {
 
 		c = V_pos.x - scoords[i].x; r = c*c;
 		c = V_pos.y - scoords[i].y; r+= c*c;
@@ -111,7 +105,7 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_noAtoms(
 		r = sqrtf(r);
 		hartree += styp[i] / r;
 	}
-	*/
+	
 	// write results
 	sidx = (threadIdx.x + blockIdx.x*B);
 	sidx+= (threadIdx.y + blockIdx.y*B) * gridDim.x * B;

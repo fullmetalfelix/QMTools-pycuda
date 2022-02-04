@@ -1074,14 +1074,15 @@ class QMTools:
 
 		return cgrid
 
-	### Compute the hartree potential on the grid, for a given charge density grid
+	### Compute the hartree potential on the grid,
 	###
-	def Compute_hartree_fromGrid(qgrid, vgrid, copyBack=True):
+	def Compute_hartree(qgrid, molecule, vgrid, copyBack=True):
 
 		print("preparing hartree kernel")
 		kernel = QMTools.srcHartree
 
 		# Q grid
+		kernel = kernel.replace('PYCUDA_NATOMS', str(molecule.natoms))
 		kernel = kernel.replace('PYCUDA_GRID_STEP', str(qgrid.step)+"f")
 
 		kernel = kernel.replace('PYCUDA_GRID_X0', str(qgrid.origin['x'])+"f")
@@ -1100,19 +1101,21 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_VGRID_Z0', str(vgrid.origin['z'])+"f")
 
 
-		print("print kernel:")
-		print(kernel)
+		#print("print kernel:")
+		#print(kernel)
 
 		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
 		kernel = kernel.get_function("gpu_hartree_noAtoms")
-		kernel.prepare([numpy.intp, numpy.intp])
+		kernel.prepare([numpy.intp, numpy.intp, numpy.intp, numpy.intp])
 
 		
 		print("computing hartree grid from qube", vgrid.GPUblocks)
 
 		kernel.prepared_call(vgrid.GPUblocks, (8,8,8),
 			qgrid.d_qube,
-			vgrid.d_qube
+			vgrid.d_qube,
+			molecule.d_types,
+			molecule.d_coords
 		)
 		
 		if copyBack:
