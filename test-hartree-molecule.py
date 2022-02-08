@@ -12,16 +12,60 @@ basisset = BasisSet("cc-pvdz.bin")
 folder = "../qmtools/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
-# template grid - 1 field only
-templateGrid = Grid.DensityGrid(mol, 0.02, 3.0)
 
-# call density generator
-qgrid = QMTools.Compute_density(templateGrid, mol, copyBack=True)
-numpy.save('density_29766_0.02.npy', qgrid.qube)
+for i in range(10,3,-1):
+
+	stp = 0.01*i
+	
+	# template grid - 1 field only
+	templateGrid = Grid.DensityGrid(mol, stp, 3.0)
+
+	for sg in range(1,3):
+		
+
+		# call density generator
+		qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=sg, copyBack=True)
+		qgrid.SaveBIN('density_29766_{}_{}.bin'.format(stp,sg), mol)
+
+		#print(qgrid)
+
+
+'''
+qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=2, copyBack=True)
+qgrid.SaveBIN('density_29766_0.1_2.bin', mol)
+numpy.save(   'density_29766_0.1_2.npy', qgrid.qube)
+
+qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=4, copyBack=True)
+qgrid.SaveBIN('density_29766_0.1_4.bin', mol)
+numpy.save(   'density_29766_0.1_4.npy', qgrid.qube)
+
+
+templateGrid = Grid.DensityGrid(mol, 0.05, 3.0)
+
+qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=1, copyBack=True)
+qgrid.SaveBIN('density_29766_0.05_1.bin', mol)
+numpy.save(   'density_29766_0.05_1.npy', qgrid.qube)
+
+qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=2, copyBack=True)
+qgrid.SaveBIN('density_29766_0.05_2.bin', mol)
+numpy.save(   'density_29766_0.05_2.npy', qgrid.qube)
+
+
+templateGrid = Grid.DensityGrid(mol, 0.025, 3.0)
+
+qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=1, copyBack=True)
+qgrid.SaveBIN('density_29766_0.025_1.bin', mol)
+numpy.save(   'density_29766_0.025_1.npy', qgrid.qube)
+'''
+
+
 #qgrid = Grid.emptyAs(templateGrid)
 #qgrid.LoadData('density_29766_0.02.npy')
 
 
+
+
+'''
 # make an equivalent grid for V
 vgrid = Grid.emptyAs(qgrid)
 
@@ -54,3 +98,31 @@ for k in range(qgrid.shape[3]):
 			fout.write(struct.pack('f',linear[i+j*qgrid.shape[1]+k*qgrid.shape[1]*qgrid.shape[2]]))
 
 fout.close()
+
+
+linear = numpy.reshape(qgrid.qube, [qgrid.shape[1]*qgrid.shape[2]*qgrid.shape[3]])
+
+fout = open("density_29766_0.02.bin","wb")
+
+fout.write(struct.pack('i',mol.natoms))
+for i in range(mol.natoms):
+	fout.write(struct.pack('i',mol.types[i]))
+	fout.write(struct.pack('f',mol.coords[i,0]))
+	fout.write(struct.pack('f',mol.coords[i,1]))
+	fout.write(struct.pack('f',mol.coords[i,2]))
+
+fout.write(struct.pack('i',qgrid.shape[1]))
+fout.write(struct.pack('i',qgrid.shape[2]))
+fout.write(struct.pack('i',qgrid.shape[3]))
+
+fout.write(struct.pack('f',qgrid.origin['x']))
+fout.write(struct.pack('f',qgrid.origin['y']))
+fout.write(struct.pack('f',qgrid.origin['z']))
+
+for k in range(qgrid.shape[3]):
+	for j in range(qgrid.shape[2]):
+		for i in range(qgrid.shape[1]):
+			fout.write(struct.pack('f',linear[i+j*qgrid.shape[1]+k*qgrid.shape[1]*qgrid.shape[2]]))
+
+fout.close()
+'''

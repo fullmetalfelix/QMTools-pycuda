@@ -159,6 +159,16 @@ class Molecule:
 		self.d_ALMOs = cuda.mem_alloc(self.ALMOs.nbytes); cuda.memcpy_htod(self.d_ALMOs, self.ALMOs)
 
 
+
+	def Translate(self, dx=0,dy=0,dz=0):
+
+		self.coords[:,0] += dx
+		self.coords[:,1] += dy
+		self.coords[:,2] += dz
+
+		cuda.memcpy_htod(self.d_coords, self.coords)
+
+
 	# end of Molecule class
 
 # Multifield grid.
@@ -284,6 +294,69 @@ class Grid:
 
 		return grid
 
+
+	### Save in binary format, optionally with a molecule info
+	def SaveBIN(self, filename, mol=None):
+
+
+		linear = numpy.reshape(self.qube, [self.shape[1]*self.shape[2]*self.shape[3]])
+
+		fout = open(filename,"wb")
+
+		if mol == None:
+			fout.write(struct.pack('i',0))
+		else:
+			fout.write(struct.pack('i',mol.natoms))
+			for i in range(mol.natoms):
+				fout.write(struct.pack('i',mol.types[i]))
+				fout.write(struct.pack('f',mol.coords[i,0]))
+				fout.write(struct.pack('f',mol.coords[i,1]))
+				fout.write(struct.pack('f',mol.coords[i,2]))
+
+		fout.write(struct.pack('i',self.shape[1]))
+		fout.write(struct.pack('i',self.shape[2]))
+		fout.write(struct.pack('i',self.shape[3]))
+
+		fout.write(struct.pack('f',self.step))
+		fout.write(struct.pack('f',self.origin['x']))
+		fout.write(struct.pack('f',self.origin['y']))
+		fout.write(struct.pack('f',self.origin['z']))
+
+		for k in range(self.shape[3]):
+			for j in range(self.shape[2]):
+				for i in range(self.shape[1]):
+					fout.write(struct.pack('f',linear[i+j*self.shape[1]+k*self.shape[1]*self.shape[2]]))
+
+		fout.close()
+
+	### Load grid from binary format file
+	def LoadBIN(filename):
+
+
+		fout = open(filename,"rb")
+
+		natm = struct.unpack('i', fout.read(4))[0]
+		fout.read(4*4*natm)
+
+		shape = struct.unpack('iii', fout.read(4*3))
+		step = struct.unpack('f', fout.read(4))[0]
+		origin = struct.unpack('fff', fout.read(4*3))
+		
+		linear = numpy.zeros((shape[0]*shape[1]*shape[2]), dtype=numpy.float32)
+		for k in range(shape[2]):
+			for j in range(shape[1]):
+				for i in range(shape[0]):
+					linear[i+j*shape[0]+k*shape[0]*shape[1]] = struct.unpack('f', fout.read(4))[0]
+		fout.close()
+
+		grid = Grid(shape,step)
+		grid.step = numpy.float32(step)
+		grid.origin = gpuarray.vec.make_float3(origin[0],origin[1],origin[2])
+
+		cuda.memcpy_htod(grid.d_qube, linear)
+		cuda.memcpy_dtoh(grid.qube, grid.d_qube)
+
+		return grid
 
 
 
@@ -1038,12 +1111,19 @@ class QMTools:
 
 	### Compute the electron density on the grid, for a given molecule.
 	### function tested and works up to 10^-6!
-	def Compute_density(grid, molecule, copyBack=True):
+	### Returns a new grid with the same shape as the input one.
+	def Compute_density(grid, molecule, subgrid=1, copyBack=True):
 
 		print("preparing density kernel")
 		kernel = QMTools.srcDensity
 		kernel = kernel.replace('PYCUDA_NATOMS', str(molecule.natoms))
 		kernel = kernel.replace('PYCUDA_NORBS', str(molecule.norbs))
+
+		kernel = kernel.replace('PYCUDA_SUBGRIDN', str(subgrid))
+		kernel = kernel.replace('PYCUDA_SUBGRIDDX1', str(1.0/subgrid)+"f")
+		kernel = kernel.replace('PYCUDA_SUBGRIDDX2', str(1.0/(subgrid*2))+"f")
+		kernel = kernel.replace('PYCUDA_SUBGRIDiV', str(1.0/(subgrid*subgrid*subgrid))+"f")
+
 		#print(kernel)
 
 		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
@@ -1056,7 +1136,7 @@ class QMTools:
 		])
 
 		cgrid = Grid.emptyAs(grid)
-		print("computing density qube (no shmem, subgrid 4)...", grid.GPUblocks)
+		print("computing density qube (no shmem, subgrid {})...".format(subgrid), grid.GPUblocks)
 
 		kernel.prepared_call(grid.GPUblocks, (8,8,8),
 			grid.step,
@@ -1069,6 +1149,14 @@ class QMTools:
 			cgrid.d_qube
 		)
 		
+		# compute the total charge
+		qtot = QMTools.Compute_qtot(cgrid)
+
+		# rescale
+		scaling = molecule.qtot / qtot
+		QMTools.Compute_qscale(cgrid, scaling)
+
+
 		if copyBack:
 			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
 

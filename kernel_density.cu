@@ -4,6 +4,11 @@
 #define NORBS PYCUDA_NORBS
 #define NATOMS PYCUDA_NATOMS
 
+#define SUBGRID PYCUDA_SUBGRIDN
+#define SUBGRIDDX PYCUDA_SUBGRIDDX1
+#define SUBGRIDDX2 PYCUDA_SUBGRIDDX2
+#define SUBGRIDiV PYCUDA_SUBGRIDiV
+
 
 
 __device__ float gpu_SolidHarmonicR(short L, short m, float3 r) {
@@ -88,11 +93,11 @@ __global__ __launch_bounds__(512, 2) void gpu_densityqube_shmem_subgrid(
 			}
 			__syncthreads();
 			for(ushort ix=0; ix<SUBGRID; ix++) {
-				voxpos.x = (blockIdx.x * B + threadIdx.x) * dx +ix*dx*SUBGRIDDX + SUBGRIDDX2;
+				voxpos.x = (blockIdx.x * B + threadIdx.x)*dx + (ix*SUBGRIDDX + SUBGRIDDX2)*dx;
 				for(ushort iy=0; iy<SUBGRID; iy++) {
-					voxpos.y = (blockIdx.y * B + threadIdx.y) * dx + iy*dx*SUBGRIDDX + SUBGRIDDX2;
+					voxpos.y = (blockIdx.y * B + threadIdx.y)*dx + (iy*SUBGRIDDX + SUBGRIDDX2)*dx;
 					for(ushort iz=0; iz<SUBGRID; iz++) {
-						voxpos.z = (blockIdx.z * B + threadIdx.z) * dx + iz*dx*SUBGRIDDX + SUBGRIDDX2;
+						voxpos.z = (blockIdx.z * B + threadIdx.z)*dx + (iz*SUBGRIDDX + SUBGRIDDX2)*dx;
 
 						volatile float partial = shDM[q];
 						volatile float3 r; // = scoords[shALMOs[p].x];
@@ -147,16 +152,4 @@ __global__ __launch_bounds__(512, 2) void gpu_densityqube_shmem_subgrid(
 	sidx+= (threadIdx.y + blockIdx.y*B) * gridDim.x * B;
 	sidx+= (threadIdx.z + blockIdx.z*B) * gridDim.x * gridDim.y * B_2;
 	qube[sidx] = charge;
-}
-
-
-
-
-
-
-__global__ void gpu_test(float3 a){
-
-	
-	printf("B[%i %i %i] T[%i %i %i] %f\n", blockIdx.x, blockIdx.y, blockIdx.z,
-		threadIdx.x, threadIdx.y, threadIdx.z, a.x);
 }
