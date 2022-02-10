@@ -175,7 +175,7 @@ class Molecule:
 class Grid:
 
 
-	def __init__(self, shape, step):
+	def __init__(self, shape, step, origin=[0,0,0]):
 
 		if len(shape) == 3:
 			print('WARNING: augmenting the grid shape!')
@@ -200,7 +200,7 @@ class Grid:
 		self.nfields = numpy.uint32(self.shape[0])
 
 		self.step = numpy.float32(step*ANG2BOR)
-		self.origin = gpuarray.vec.make_float3(0,0,0)
+		self.origin = gpuarray.vec.make_float3(origin[0],origin[1],origin[2])
 		self.lattice = numpy.asarray([[1,0,0],[0,1,0],[0,0,1]], dtype=numpy.float32)
 
 	def __str__(self):
