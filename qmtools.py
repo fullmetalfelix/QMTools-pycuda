@@ -1098,6 +1098,10 @@ class QMTools:
 	fker = open('kernel_hartree.cu')
 	srcHartree = fker.read(); fker.close()
 
+	# add nuclear charge to charge grid
+	fker = open('kernel_nuclear.cu')
+	srcNuclear = fker.read(); fker.close()
+
 	fker = open('kernel_automaton.cu')
 	srcAutomaton = fker.read(); fker.close()
 
@@ -1210,6 +1214,47 @@ class QMTools:
 			cuda.memcpy_dtoh(vgrid.qube, vgrid.d_qube)
 
 
+	### Compute the hartree potential on the grid using FFT
+	###
+	def Compute_hartree_fft(qgrid, molecule, vgrid, sigma=0.5, cutoff=6, copyBack=True):
+
+		if qgrid.shape != vgrid.shape:
+			raise ValueError(f'Density grid shape {qgrid.shape} should equal '
+				f'potential grid shape {vgrid.shape}')
+
+		sigma *= ANG2BOR
+
+		print("preparing nuclear kernel")
+		kernel = QMTools.srcNuclear
+
+		# Q grid
+		kernel = kernel.replace('PYCUDA_NATOMS', str(molecule.natoms))
+		kernel = kernel.replace('PYCUDA_GRID_STEP', str(qgrid.step)+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_X0', str(qgrid.origin['x'])+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Y0', str(qgrid.origin['y'])+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Z0', str(qgrid.origin['z'])+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_NX', str(qgrid.GPUblocks[0]))
+		kernel = kernel.replace('PYCUDA_GRID_NY', str(qgrid.GPUblocks[1]))
+		kernel = kernel.replace('PYCUDA_GRID_NZ', str(qgrid.GPUblocks[2]))
+
+		kernel = kernel.replace('PYCUDA_SIGMA', str(sigma)+"f")
+		kernel = kernel.replace('PYCUDA_CUTOFF_SQ', str((cutoff*sigma)**2)+"f")
+
+		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		kernel = kernel.get_function("gpu_add_nuclear_charge")
+		kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
+		
+		print("adding nuclear charge to qube", vgrid.GPUblocks)
+		kernel.prepared_call(vgrid.GPUblocks, (8,8,8),
+			qgrid.d_qube,
+			molecule.d_types,
+			molecule.d_coords
+		)
+		
+		if copyBack:
+			cuda.memcpy_dtoh(qgrid.qube, qgrid.d_qube)
 
 	### Compute the starting guess for the electron density.
 	# The input grid is only a template.
