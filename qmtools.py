@@ -296,6 +296,7 @@ class Grid:
 
 
 	### Save in binary format, optionally with a molecule info
+	### This only saves the first field
 	def SaveBIN(self, filename, mol=None):
 
 
@@ -328,6 +329,45 @@ class Grid:
 					fout.write(struct.pack('f',linear[i+j*self.shape[1]+k*self.shape[1]*self.shape[2]]))
 
 		fout.close()
+
+	### Save in binary format, optionally with a molecule info
+	def SaveBINmulti(self, filename, mol=None):
+
+
+		for f in range(self.shape[0]): # loop over fields
+
+			linear = numpy.reshape(self.qube[f], [self.shape[1]*self.shape[2]*self.shape[3]])
+
+			fname = "{}-{}.bin".format(filename, f)
+			fout = open(fname,"wb")
+
+			if mol == None:
+				fout.write(struct.pack('i',0))
+			else:
+				fout.write(struct.pack('i',mol.natoms))
+				for i in range(mol.natoms):
+					fout.write(struct.pack('i',mol.types[i]))
+					fout.write(struct.pack('f',mol.coords[i,0]))
+					fout.write(struct.pack('f',mol.coords[i,1]))
+					fout.write(struct.pack('f',mol.coords[i,2]))
+
+			fout.write(struct.pack('i',self.shape[1]))
+			fout.write(struct.pack('i',self.shape[2]))
+			fout.write(struct.pack('i',self.shape[3]))
+
+			fout.write(struct.pack('f',self.step))
+			fout.write(struct.pack('f',self.origin['x']))
+			fout.write(struct.pack('f',self.origin['y']))
+			fout.write(struct.pack('f',self.origin['z']))
+
+			for k in range(self.shape[3]):
+				for j in range(self.shape[2]):
+					for i in range(self.shape[1]):
+						fout.write(struct.pack('f',linear[i+j*self.shape[1]+k*self.shape[1]*self.shape[2]]))
+
+			fout.close()
+
+
 
 	### Load grid from binary format file
 	def LoadBIN(filename):
@@ -374,8 +414,8 @@ class GPtype(IntEnum):
 	DIV = 7
 	NN = 8
 	TANH = 9
-	EXP = 10
-	EXP2 = 11
+	#EXP = 10
+	EXP2 = 10
 
 
 ## Represents one genetic program instruction with its parameters.
@@ -386,7 +426,7 @@ class GPCode:
 
 	## list of instructions that interpret the first argument as an index
 	iArg1idx = [GPtype.PROPAGATE, GPtype.SCALE, GPtype.OFFSET, 
-		GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV, GPtype.TANH, GPtype.EXP, GPtype.EXP2]
+		GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV, GPtype.TANH, GPtype.EXP2]
 	## list of instructions that interpret the second arg as an index
 	iArg2idx = [GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV]
 
@@ -467,8 +507,8 @@ class GPCode:
 
 		elif t == GPtype.PROPAGATE: s += "{0}[widx+{1}]".format(inbuf, args[0])
 		elif t == GPtype.TANH: 	s += "tanhf({0}[widx+{1}])".format(inbuf, args[0])
-		elif t == GPtype.EXP: 	s += "expf(-fabsf({0}[widx+{1}]))".format(inbuf, args[0])
-		elif t == GPtype.EXP2: 	s += "expf(-fabsf({2}) * {0}[widx+{1}]*{0}[widx+{1}])".format(inbuf, args[0], args[1])
+		#elif t == GPtype.EXP: 	s += "expf(-fabsf({0}[widx+{1}]))".format(inbuf, args[0])
+		elif t == GPtype.EXP2: 	s += "expf(-{2} * {0}[widx+{1}]*{0}[widx+{1}])".format(inbuf, args[0], numpy.abs(args[1]))
 
 		elif t == GPtype.SCALE: 	s += "{2:4.6f} * {0}[widx+{1}]".format(inbuf, args[0], args[1])
 		elif t == GPtype.OFFSET: 	s += "{2:4.6f} + {0}[widx+{1}]".format(inbuf, args[0], args[1])
@@ -476,7 +516,14 @@ class GPCode:
 		elif t == GPtype.ADD: 	s += "{0}[widx+{1}] + {0}[widx+{2}]".format(inbuf, args[0], args[1])
 		elif t == GPtype.SUB: 	s += "{0}[widx+{1}] - {0}[widx+{2}]".format(inbuf, args[0], args[1])
 		elif t == GPtype.MUL: 	s += "{0}[widx+{1}] * {0}[widx+{2}]".format(inbuf, args[0], args[1])
-		elif t == GPtype.DIV: 	s += "({0}[widx+{2}] != 0)? {0}[widx+{1}] / {0}[widx+{2}] : 0".format(inbuf, args[0], args[1])
+		elif t == GPtype.DIV: 	
+
+			snip = "\t"*indent
+			snip+= "acc= ({0}[widx+{2}] != 0)? tanhf({0}[widx+{1}] / {0}[widx+{2}]) : 0; ".format(inbuf, args[0], args[1])
+			snip+= "if(isnan(acc)) acc=0;\n"
+			snip+= "{} acc".format(s)
+			s = snip
+			#s += "({0}[widx+{2}] != 0)? tanhf({0}[widx+{1}] / {0}[widx+{2}]) : 0".format(inbuf, args[0], args[1],   outbuf,outidx)
 		
 
 		#elif t == GPtype.MEAN:
@@ -503,7 +550,7 @@ class GPCode:
 
 
 
-### Automaton object.
+### Automaton object - GENETIC PROGRAMMING
 #
 class Automaton:
 
@@ -607,6 +654,9 @@ class Automaton:
 			if outputSize != 4:
 				code1 += "\t\t\tfor(ushort k=0; k<{}; k++) buffer1[widx + k] = buffer2[k];\n\n".format(outputSize)
 
+			# DEBUG! check if some output was nan
+			code1 += "\t\t\tfor(ushort k=0; k<{}; k++) if(isnan(buffer2[k])) printf(\"output here was nan [layer {}, output %i]\\n\",k);\n\n".format(outputSize,nl)
+			nl += 1
 		src = src.replace(flag, flag+'\n'+code1)
 		# --- END OF PROGRAM 1: transfer rates --- #
 
@@ -708,7 +758,7 @@ class Automaton:
 	## mol: molcule object
 	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
 	## qref: grid with the correct electron density of the molecule
-	def Evolve(self, mol, cgrid, maxiter=1000, tolerance=0.1):
+	def Evolve(self, mol, cgrid, maxiter=1000, tolerance=0.1, debug=False):
 
 
 		# setup the GP kernel
@@ -721,6 +771,11 @@ class Automaton:
 		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
 		#print(kernel)
 
+		if debug: # print the kernel for debug
+			fout = open("atmgp.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
 		# compile
 		ptx = SourceModule(kernel, include_dirs=[os.getcwd()]) #, options=["--resource-usage"])
 
@@ -731,17 +786,18 @@ class Automaton:
 		params = numpy.asarray(params).astype(numpy.float32)
 		cuda.memcpy_htod(cp, params) # copy constant params
 
+		print("cParams",params,params.shape)
+
 
 		ptx = ptx.get_function("gpu_automaton_evolve")
 		ptx.prepare([numpy.intp, numpy.intp])
 
-
-
 		ogrid = Grid.emptyAs(cgrid)
 
 		# debug save
-		cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
-		numpy.save('atm.in.npy',cgrid.qube[0])
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			cgrid.SaveBINmulti('atmgp.input',mol)
 
 		# do evolution
 		qtot = QMTools.Compute_qtot(cgrid)
@@ -757,28 +813,30 @@ class Automaton:
 			cgrid.d_qube = ogrid.d_qube
 			ogrid.d_qube = tmp
 
-			# renormalize q if needed
-			if rep % 100 == 0:
-				qtot = QMTools.Compute_qtot(cgrid)
-				if numpy.abs(qtot-mol.qtot) > 1.0e-3:
-					factor = float(mol.qtot) / qtot
-					QMTools.Compute_qscale(cgrid, factor)
-				#print(rep, qtot)
 
+			# renormalize q if needed
+			#if rep % 1 == 0:
+			qtot = QMTools.Compute_qtot(cgrid)
+			print("step calc {0} -- {1:-5e}".format(rep, qtot))
+			if numpy.abs(qtot-mol.qtot) > 1.0e-3:
+				factor = float(mol.qtot) / qtot
+				print("rescale",factor)
+				QMTools.Compute_qscale(cgrid, factor)
+				
+
+
+			#if debug:
+			#	cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			#	cgrid.SaveBINmulti('atmgp.output-{}'.format(rep+1),mol)
 
 			# check if q converged
 			qdiff = QMTools.Compute_qdiff(cgrid, ogrid, rel=False)
 			if numpy.isnan(qdiff):
+				print("diff is nan")
 				return False, qdiff
 			#print(rep, qtot, qdiff)
 
 
-		# copy back
-		cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
-		numpy.save('atm.out.npy',cgrid.qube[0])
-		numpy.save('atm.out.V.npy',cgrid.qube[1])
-		numpy.save('atm.out.A.npy',cgrid.qube[2])
-		numpy.save('atm.out.B.npy',cgrid.qube[3])
 
 		return True, qdiff
 
@@ -834,6 +892,7 @@ class Automaton:
 
 					self.code[i].args += mscale*(2*numpy.random.random(len(self.code[i].args))-1)
 
+### Automaton object - NEURAL NETS
 class AutomatonNN:
 
 
@@ -862,7 +921,8 @@ class AutomatonNN:
 		self.dnasize+= 16*16*nl2 + 16*nl2 + 16*2 + 2 # field net
 		self.dnasize+= 8 + 12 # extra constants
 
-		self.params = (2*numpy.random.random(self.dnasize, dtype=numpy.float32)-1)*pscale
+		self.params = (2*numpy.random.random(self.dnasize)-1)*pscale
+		self.params = self.params.astype(numpy.float32)
 		self.absAB = numpy.random.random(2)*0.4
 
 
@@ -909,6 +969,8 @@ class AutomatonNN:
 		bs += struct.pack('f', self.absAB[0])
 		bs += struct.pack('f', self.absAB[1])
 		
+		bs += struct.pack('f', self.fitness)
+
 		return bs
 
 
@@ -942,7 +1004,7 @@ class AutomatonNN:
 	## mol: molcule object
 	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
 	## qref: grid with the correct electron density of the molecule
-	def Evolve(self, mol, cgrid, maxiter=1000, tolerance=0.1):
+	def Evolve(self, mol, cgrid, maxiter=1000, tolerance=0.1, debug=False):
 
 
 		# setup the GP kernel
@@ -953,7 +1015,12 @@ class AutomatonNN:
 		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
 		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
 		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
-		#print(kernel)
+		
+		if debug: # print the kernel for debug
+			fout = open("atm.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
 
 		# compile
 		ptx = SourceModule(kernel, include_dirs=[os.getcwd()]) #, options=["--resource-usage"])
@@ -967,12 +1034,13 @@ class AutomatonNN:
 		ptx = ptx.get_function("gpu_automaton_nn_evolve")
 		ptx.prepare([numpy.intp, numpy.intp])
 
-
 		ogrid = Grid.emptyAs(cgrid)
 
-		# debug save
-		#cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
-		#numpy.save('atm.in.npy',cgrid.qube[0])
+		
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			cgrid.SaveBINmulti('atm.input',mol)
+
 
 		# do evolution
 		qtot = QMTools.Compute_qtot(cgrid)
@@ -996,12 +1064,19 @@ class AutomatonNN:
 					QMTools.Compute_qscale(cgrid, factor)
 				#print(rep, qtot)
 
+			if debug:
+				cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+				cgrid.SaveBINmulti('atm.output-{}'.format(rep+1),mol)
+
 
 			# check if q converged
 			qdiff = QMTools.Compute_qdiff(cgrid, ogrid, rel=False)
+			print(rep, qtot, qdiff)
+
 			if numpy.isnan(qdiff):
+				print("diff is nan")
 				return False, qdiff
-			#print(rep, qtot, qdiff)
+			
 
 
 		# copy back
@@ -1050,9 +1125,10 @@ class AutomatonNN:
 
 	def Mutate(self, amount, mscale, pscale):
 
-		mutagen = (2*numpy.random.random(self.dnasize, dtype=numpy.float32)-1)*mscale
+		mutagen = (2*numpy.random.random(self.dnasize)-1)*mscale
+		mutagen = mutagen.astype(numpy.float32)
 
-		mask = numpy.random.random(self.dnasize, dtype=numpy.float32)
+		mask = numpy.random.random(self.dnasize).astype(numpy.float32)
 		mask[mask>amount] = 0
 
 		self.params += mutagen*mask
@@ -1162,9 +1238,11 @@ class QMTools:
 
 		return cgrid
 
-	### Compute the hartree potential on the grid,
-	###
-	def Compute_hartree(qgrid, molecule, vgrid, copyBack=True):
+
+	### Compute the hartree potential on the grid.
+	### Returns a new grid with the hartree potential.
+	### The output grid has the same specs as the input electron grid.
+	def Compute_hartree(qgrid, molecule, tolerance=1.0e-24, copyBack=True):
 
 		print("preparing hartree kernel")
 		kernel = QMTools.srcHartree
@@ -1177,37 +1255,53 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_GRID_Y0', str(qgrid.origin['y'])+"f")
 		kernel = kernel.replace('PYCUDA_GRID_Z0', str(qgrid.origin['z'])+"f")
 
-		kernel = kernel.replace('PYCUDA_GRID_NX', str(qgrid.GPUblocks[0]))
-		kernel = kernel.replace('PYCUDA_GRID_NY', str(qgrid.GPUblocks[1]))
-		kernel = kernel.replace('PYCUDA_GRID_NZ', str(qgrid.GPUblocks[2]))
+		kernel = kernel.replace('PYCUDA_GRID_NX', str(qgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_GRID_NY', str(qgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_GRID_NZ', str(qgrid.shape[3]))
 
-
-		# V grid
-		kernel = kernel.replace('PYCUDA_VGRID_STEP', str(vgrid.step)+"f")
-		kernel = kernel.replace('PYCUDA_VGRID_X0', str(vgrid.origin['x'])+"f")
-		kernel = kernel.replace('PYCUDA_VGRID_Y0', str(vgrid.origin['y'])+"f")
-		kernel = kernel.replace('PYCUDA_VGRID_Z0', str(vgrid.origin['z'])+"f")
-
-
-		#print("print kernel:")
-		#print(kernel)
 
 		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
-		kernel = kernel.get_function("gpu_hartree_noAtoms")
-		kernel.prepare([numpy.intp, numpy.intp, numpy.intp, numpy.intp])
+		src = kernel
 
+
+		# grids for result and computation
+		vgrid = Grid.emptyAs(qgrid)
+		tgrid = Grid.emptyAs(qgrid)
+
+
+		# compute initial guess
+		tmp = -qgrid.qube / (qgrid.step*qgrid.step*qgrid.step)
+		cuda.memcpy_htod(vgrid.d_qube, tmp)
+		#kernel = src.get_function("gpu_hartree_guess")
+		#kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
+		#kernel.prepared_call(vgrid.GPUblocks, (8,8,8), molecule.d_types, molecule.d_coords, vgrid.d_qube)
+
+
+		# do jacobi iterations
+		kernel = src.get_function("gpu_hartree_iteration")
+		kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
 		
 		print("computing hartree grid from qube", vgrid.GPUblocks)
+		delta = tolerance+1
+		while delta > tolerance:
+			
+			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), qgrid.d_qube, vgrid.d_qube, tgrid.d_qube)
+			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), qgrid.d_qube, tgrid.d_qube, vgrid.d_qube)
 
-		kernel.prepared_call(vgrid.GPUblocks, (8,8,8),
-			qgrid.d_qube,
-			vgrid.d_qube,
-			molecule.d_types,
-			molecule.d_coords
-		)
-		
+			# compare v2 and v1 to see if it converged
+			delta = QMTools.Compute_qdiff(vgrid,tgrid)
+			print("{:.8E}".format(delta))
+
+
+		kernel = src.get_function("gpu_hartree_add_nuclei")
+		kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
+		kernel.prepared_call(vgrid.GPUblocks, (8,8,8), molecule.d_types, molecule.d_coords, vgrid.d_qube)
+
+
 		if copyBack:
 			cuda.memcpy_dtoh(vgrid.qube, vgrid.d_qube)
+
+		return vgrid
 
 
 
@@ -1246,7 +1340,7 @@ class QMTools:
 
 	### Computes the VNe of a molecule and stores it the returned grid
 	# The input grid is only used as a template.
-	def Compute_VNe(grid, molecule, adsorb=0.1, diff=0.01, tolerance=0.000000001, copyBack=True):
+	def Compute_VNe(grid, molecule, adsorb=0.1, diff=0.01, tolerance=1.0e-9, copyBack=True):
 
 		print("computing VNe on new grid...")
 
