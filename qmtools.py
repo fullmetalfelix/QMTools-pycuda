@@ -805,7 +805,7 @@ class Automaton:
 		qdiff = tolerance + 1
 		rep = 0
 		
-		while qdiff > tolerance and rep < maxiter and rep > 10:
+		while (qdiff > tolerance or rep < 10) and rep < maxiter:
 
 			# propagate q,A,B
 			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
@@ -1050,7 +1050,7 @@ class AutomatonNN:
 		qdiff = tolerance + 1
 		rep = 0
 
-		while qdiff > tolerance and rep < maxiter and rep > 10:
+		while (qdiff > tolerance or rep < 10) and rep < maxiter:
 
 			# propagate q,A,B
 			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
