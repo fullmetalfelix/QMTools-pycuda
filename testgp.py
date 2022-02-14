@@ -1,101 +1,71 @@
-from enum import IntEnum, auto, unique
+from qmtools import BasisSet, Molecule, Grid, Automaton, QMTools
 import numpy
-
-
-@unique
-class GPtype(IntEnum):
-
-	CONST = 0
-	PROPAGATE = 1
-	SCALE = 2
-	OFFSET = 3
-	ADD = 4
-	SUB = 5
-	MUL = 6
-	DIV = 7
-	NN = 8
-	TANH = 9
-	EXP = 10
-
-
-class GPCode:
-
-
-	nInstructions = len(GPtype.__members__.items())
-	iArg1idx = [GPtype.PROPAGATE, GPtype.SCALE, GPtype.OFFSET, 
-		GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV, GPtype.TANH, GPtype.EXP]
-	iArg2idx = [GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV]
-
-
-	def __init__(self, typ, args):
-
-		self.type = typ
-		self.args = args
+import pycuda.driver as cuda
 
 
 
-	def Random(scale):
-		
-		t = numpy.random.randint(0, GPCode.nInstructions)
-		
-		nargs = 2
-		if GPtype(t) == GPtype.NN: nargs = 16+1
-		args = scale*(2*numpy.random.random(nargs)-1)
+basisset = BasisSet("cc-pvdz.bin")
+qm = QMTools()
 
-		return GPCode(t, args)
+folder = "../qmtools/molecule_29766_0/"
+mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
+gridTemplate = Grid.DensityGrid(mol, 0.1, 3.0)
 
+# generate the electron grid from the DM and basis set
+#qref = QMTools.Compute_density(gridTemplate, mol, subgrid=4, copyBack=True)
+#numpy.save('pycuda_qref.npy', qref.qube)
 
+#'''
+qref = Grid.emptyAs(gridTemplate)
+qref.LoadData('pycuda_qref.npy')
 
-	def WriteCode(self, inbuf, inbufsize, outbuf, outidx, indent=1):
+gvne = QMTools.Compute_VNe(gridTemplate, mol, adsorb=0.1, diff=0.01, tolerance=1.0e-9, copyBack=True)
+gqsd = QMTools.Compute_qseed(gridTemplate, mol, copyBack=True)
+numpy.save('pycuda_vne.npy', gvne.qube)
+numpy.save('pycuda_qseed.npy', gvne.qube)
+#'''
 
-		s = "\t"*indent
-		s+= "{}[{}] = ".format(outbuf, outidx)
+# the compute grid is allocated separately so we can reuse it
+cgrid = Grid.emptyAs(gridTemplate, nfields=4)
 
-		t = GPtype(self.type)
-		args = list(self.args)
+# create an automaton and initialize the compute grid
+atm = Automaton()
+atm.Randomize(5.0, 4)
 
-		if t in GPCode.iArg1idx:  args[0] = int(args[0] % inbufsize)
-		if t in GPCode.iArg2idx:  args[1] = int(args[1] % inbufsize)
+binary = atm.Binarize()
+#print(binary)
 
+atm.Randomize(0.0,4)
+atm.LoadBinary(binary)
 
-		if   t == GPtype.CONST: 	s += "{:4.6f}".format(args[0])
-		elif t == GPtype.PROPAGATE: s += "{0}[{1}]".format(inbuf, args[0])
-		elif t == GPtype.SCALE: 	s += "{2:4.6f} * {0}[{1}]".format(inbuf, args[0], args[1])
-		elif t == GPtype.OFFSET: 	s += "{2:4.6f} + {0}[{1}]".format(inbuf, args[0], args[1])
-		elif t == GPtype.ADD: 	s += "{0}[{1}] + {0}[{2}]".format(inbuf, args[0], args[1])
-		elif t == GPtype.SUB: 	s += "{0}[{1}] - {0}[{2}]".format(inbuf, args[0], args[1])
-		elif t == GPtype.MUL: 	s += "{0}[{1}] * {0}[{2}]".format(inbuf, args[0], args[1])
-		elif t == GPtype.DIV: 	s += "({0}[{2}] != 0)? {0}[{1}] / {0}[{2}] : 0".format(inbuf, args[0], args[1])
-		elif t == GPtype.TANH: 	s += "tanhf({0}[{1}])".format(inbuf, args[0])
-		elif t == GPtype.EXP: 	s += "expf(-absf({0}[{1}]))".format(inbuf, args[0])
+binary2 = atm.Binarize()
 
-		#elif t == GPtype.MEAN:
-		#	snip = "\t"*indent
-		#	snip+= "float acc=0; for(ushort cnt=0; cnt<{}; ++cnt) acc += {}[cnt];\n".format(inbufsize,inbuf)
-		#	snip+= s + "acc / {}".format(inbufsize)
-		#	s = snip
+print(len(binary),len(binary2))
 
-		elif t == GPtype.NN:
-			
-			snip = "\t"*indent
-			snip+= "acc=0;\n"
-			for i in range(inbufsize):
-				tmp = "\t"*indent
-				tmp += "acc += {2:4.6f} * {0}[{1}];\n".format(inbuf, i, args[i])
-				snip += tmp
-			snip += "{}acc = tanhf(acc + {:4.6f});\n".format("\t"*indent, args[inbufsize])
-			snip += "{} acc".format(s)
-			s = snip
-
-		s += ';\n'
-		return s
+for c in range(len(binary)):
+	if binary[c] != binary2[c]:
+		print("mismatch",c,binary[c],binary2[c])
 
 
 
-for rep in range(10):
+atm.Mutate(0.1,0.1,16.0)
 
-	i = GPCode.Random(10)
-	c = i.WriteCode('in', 8, 'output',0,0)
-	print(c)
+
+atm.Initialize(cgrid, gqsd, gvne)
+atm.Evolve(mol, cgrid, maxiter=10, debug=False)
+
+
+#print(atm.Binarize())
+
+
+#mgrid = Grid.emptyAs(qref, nfields=4)
+#mgrid.Compute_qseed(mol, copyBack=True)
+#numpy.save("pycuda_qseed.npy",mgrid.qube[0])
+#mgrid.Compute_VNe(mol)
+
+#qref.ComputeDensity_subgrid(mol)
+#numpy.save("density_29766_pycuda_sh.npy",qref.qube)
+
+#mol.ComputeVNe(qref)
 

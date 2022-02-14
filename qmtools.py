@@ -414,8 +414,8 @@ class GPtype(IntEnum):
 	DIV = 7
 	NN = 8
 	TANH = 9
-	#EXP = 10
-	EXP2 = 10
+	EXP = 10
+	EXP2 = 11
 
 
 ## Represents one genetic program instruction with its parameters.
@@ -426,7 +426,7 @@ class GPCode:
 
 	## list of instructions that interpret the first argument as an index
 	iArg1idx = [GPtype.PROPAGATE, GPtype.SCALE, GPtype.OFFSET, 
-		GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV, GPtype.TANH, GPtype.EXP2]
+		GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV, GPtype.TANH, GPtype.EXP, GPtype.EXP2]
 	## list of instructions that interpret the second arg as an index
 	iArg2idx = [GPtype.ADD, GPtype.SUB, GPtype.MUL, GPtype.DIV]
 
@@ -507,7 +507,7 @@ class GPCode:
 
 		elif t == GPtype.PROPAGATE: s += "{0}[widx+{1}]".format(inbuf, args[0])
 		elif t == GPtype.TANH: 	s += "tanhf({0}[widx+{1}])".format(inbuf, args[0])
-		#elif t == GPtype.EXP: 	s += "expf(-fabsf({0}[widx+{1}]))".format(inbuf, args[0])
+		elif t == GPtype.EXP: 	s += "expf(-fabsf({0}[widx+{1}]))".format(inbuf, args[0])
 		elif t == GPtype.EXP2: 	s += "expf(-{2} * {0}[widx+{1}]*{0}[widx+{1}])".format(inbuf, args[0], numpy.abs(args[1]))
 
 		elif t == GPtype.SCALE: 	s += "{2:4.6f} * {0}[widx+{1}]".format(inbuf, args[0], args[1])
@@ -655,8 +655,8 @@ class Automaton:
 				code1 += "\t\t\tfor(ushort k=0; k<{}; k++) buffer1[widx + k] = buffer2[k];\n\n".format(outputSize)
 
 			# DEBUG! check if some output was nan
-			code1 += "\t\t\tfor(ushort k=0; k<{}; k++) if(isnan(buffer2[k])) printf(\"output here was nan [layer {}, output %i]\\n\",k);\n\n".format(outputSize,nl)
-			nl += 1
+			#code1 += "\t\t\tfor(ushort k=0; k<{}; k++) if(isnan(buffer2[k])) printf(\"output here was nan [layer {}, output %i]\\n\",k);\n\n".format(outputSize,nl)
+			#nl += 1
 		src = src.replace(flag, flag+'\n'+code1)
 		# --- END OF PROGRAM 1: transfer rates --- #
 
@@ -777,7 +777,7 @@ class Automaton:
 			fout.close()
 
 		# compile
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()]) #, options=["--resource-usage"])
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -786,7 +786,6 @@ class Automaton:
 		params = numpy.asarray(params).astype(numpy.float32)
 		cuda.memcpy_htod(cp, params) # copy constant params
 
-		print("cParams",params,params.shape)
 
 
 		ptx = ptx.get_function("gpu_automaton_evolve")
@@ -803,7 +802,10 @@ class Automaton:
 		qtot = QMTools.Compute_qtot(cgrid)
 		print("qtot at start:", qtot)
 
-		for rep in range(maxiter):
+		qdiff = tolerance + 1
+		rep = 0
+		
+		while qdiff > tolerance and rep < maxiter and rep > 10:
 
 			# propagate q,A,B
 			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
@@ -815,28 +817,28 @@ class Automaton:
 
 
 			# renormalize q if needed
-			#if rep % 1 == 0:
-			qtot = QMTools.Compute_qtot(cgrid)
-			print("step calc {0} -- {1:-5e}".format(rep, qtot))
-			if numpy.abs(qtot-mol.qtot) > 1.0e-3:
-				factor = float(mol.qtot) / qtot
-				print("rescale",factor)
-				QMTools.Compute_qscale(cgrid, factor)
-				
+			if rep % 1 == 0:
+				qtot = QMTools.Compute_qtot(cgrid)
+				#print("step calc {0} -- {1:-5e}".format(rep, qtot))
+				if numpy.abs(qtot-mol.qtot) > 1.0e-3:
+					factor = float(mol.qtot) / qtot
+					#print("rescale",factor)
+					QMTools.Compute_qscale(cgrid, factor)
+					
 
 
-			#if debug:
-			#	cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
-			#	cgrid.SaveBINmulti('atmgp.output-{}'.format(rep+1),mol)
+			if debug:
+				cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+				cgrid.SaveBINmulti('atmgp.output-{}'.format(rep+1),mol)
 
 			# check if q converged
 			qdiff = QMTools.Compute_qdiff(cgrid, ogrid, rel=False)
 			if numpy.isnan(qdiff):
 				print("diff is nan")
 				return False, qdiff
-			#print(rep, qtot, qdiff)
+			print(rep, qtot, qdiff)
 
-
+			rep += 1
 
 		return True, qdiff
 
@@ -1045,8 +1047,10 @@ class AutomatonNN:
 		# do evolution
 		qtot = QMTools.Compute_qtot(cgrid)
 		print("qtot at start:", qtot)
+		qdiff = tolerance + 1
+		rep = 0
 
-		for rep in range(maxiter):
+		while qdiff > tolerance and rep < maxiter and rep > 10:
 
 			# propagate q,A,B
 			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
@@ -1077,14 +1081,7 @@ class AutomatonNN:
 				print("diff is nan")
 				return False, qdiff
 			
-
-
-		# copy back
-		#cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
-		#numpy.save('atm.out.npy',cgrid.qube[0])
-		#numpy.save('atm.out.V.npy',cgrid.qube[1])
-		#numpy.save('atm.out.A.npy',cgrid.qube[2])
-		#numpy.save('atm.out.B.npy',cgrid.qube[3])
+			rep += 1
 
 		return True, qdiff
 
