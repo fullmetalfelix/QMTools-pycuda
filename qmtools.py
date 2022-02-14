@@ -777,7 +777,7 @@ class Automaton:
 			fout.close()
 
 		# compile
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()])#, options=["--resource-usage"])
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -787,21 +787,21 @@ class Automaton:
 		cuda.memcpy_htod(cp, params) # copy constant params
 
 
-
 		ptx = ptx.get_function("gpu_automaton_evolve")
 		ptx.prepare([numpy.intp, numpy.intp])
 
 		ogrid = Grid.emptyAs(cgrid)
 
+		qtot = QMTools.Compute_qtot(cgrid)
+
 		# debug save
 		if debug: # debug save
 			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
 			cgrid.SaveBINmulti('atmgp.input',mol)
+			print("qtot at start:", qtot)
 
 		# do evolution
-		qtot = QMTools.Compute_qtot(cgrid)
-		print("qtot at start:", qtot)
-
+		
 		qdiff = tolerance + 1
 		rep = 0
 		
@@ -826,7 +826,6 @@ class Automaton:
 					QMTools.Compute_qscale(cgrid, factor)
 					
 
-
 			if debug:
 				cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
 				cgrid.SaveBINmulti('atmgp.output-{}'.format(rep+1),mol)
@@ -836,7 +835,8 @@ class Automaton:
 			if numpy.isnan(qdiff):
 				print("diff is nan")
 				return False, qdiff
-			print(rep, qtot, qdiff)
+			
+			#print(rep, qtot, qdiff)
 
 			rep += 1
 
@@ -1038,15 +1038,15 @@ class AutomatonNN:
 
 		ogrid = Grid.emptyAs(cgrid)
 
-		
+		qtot = QMTools.Compute_qtot(cgrid)
+
 		if debug: # debug save
 			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
 			cgrid.SaveBINmulti('atm.input',mol)
+			print("qtot at start:", qtot)
 
 
 		# do evolution
-		qtot = QMTools.Compute_qtot(cgrid)
-		print("qtot at start:", qtot)
 		qdiff = tolerance + 1
 		rep = 0
 
@@ -1075,7 +1075,7 @@ class AutomatonNN:
 
 			# check if q converged
 			qdiff = QMTools.Compute_qdiff(cgrid, ogrid, rel=False)
-			print(rep, qtot, qdiff)
+			#print(rep, qtot, qdiff)
 
 			if numpy.isnan(qdiff):
 				print("diff is nan")

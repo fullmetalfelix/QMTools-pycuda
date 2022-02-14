@@ -53,7 +53,7 @@ atm.Mutate(0.1,0.1,16.0)
 
 
 atm.Initialize(cgrid, gqsd, gvne)
-atm.Evolve(mol, cgrid, maxiter=10, debug=False)
+atm.Evolve(mol, cgrid, maxiter=10, debug=True)
 
 
 #print(atm.Binarize())
