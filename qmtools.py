@@ -904,7 +904,8 @@ class AutomatonNN:
 		self.absAB = []
 		self.nlayers = []
 		self.fitness = 0
-
+		self.dnasize = 0
+		self.fitness = -9999
 
 	def Random(nl1, nl2, pscale):
 
@@ -1092,7 +1093,7 @@ class AutomatonNN:
 
 		qdiff = QMTools.Compute_qdiff(cgrid, qref, rel)
 		if numpy.isnan(qdiff):
-			qdiff = -9999 + numpy.random.random()
+			self.fitness = -9999 + numpy.random.random()
 		else: 
 			self.fitness = -qdiff
 
@@ -1105,6 +1106,7 @@ class AutomatonNN:
 		r.nlayers = a.nlayers
 		r.absAB = [0,0]
 		r.params = numpy.copy(a.params)
+		r.dnasize = a.dnasize
 
 		for i in range(a.params.shape[0]):
 
