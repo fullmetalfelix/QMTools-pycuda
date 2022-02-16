@@ -148,6 +148,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_evolve(
 			tA += rep * buffer2[1];
 			tB += rep * buffer2[2];
 
+
 			/* DEBUG PRINT
 			if(q1 != 0 && q2 !=0){
 				r.x = threadIdx.x + blockIdx.x*B;

@@ -116,7 +116,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_nn_evolve(
 
 			// put some extra constants in the last 8 inputs - buffer1[widx + 8 + k] k=0-7(incl)
 			// PYCUDA_GENETICPROGRAM_CONSTS_1
-			for(ushort k=0; k<8; k++) buffer1[widx + 8 + k] = cParams[k]
+			for(ushort k=0; k<8; k++) buffer1[widx + 8 + k] = cParams[k];
 			uint offset = 8;
 
 			// if we are doing the run with flipped inputs, flip them
@@ -138,7 +138,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_nn_evolve(
 					for(ushort l=0; l<16; l++)
 						acc += cParams[offset+16*k+l] * buffer1[widx + l];
 					acc += cParams[offset+16*k+16];
-					buffer2[k] = tanhf(acc)
+					buffer2[k] = tanhf(acc);
 
 					offset += 16+1;
 				}
@@ -154,7 +154,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_nn_evolve(
 				for(ushort l=0; l<16; l++)
 					acc += cParams[offset+16*k+l] * buffer1[widx + l];
 				acc += cParams[offset+16*k+16];
-				buffer2[k] = acc
+				buffer2[k] = acc;
 
 				offset += 16+1;
 			}
@@ -221,7 +221,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_nn_evolve(
 
 	// add 12 constants
 	for(ushort k=0; k<12; k++) buffer1[widx + 4 + k] = cParams[offset+k];
-	offset += 12
+	offset += 12;
 
 
 	// main NN part
@@ -232,7 +232,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_nn_evolve(
 			for(ushort l=0; l<16; l++)
 				acc += cParams[offset+16*k+l] * buffer1[widx + l];
 			acc += cParams[offset+16*k+16];
-			buffer2[k] = tanhf(acc)
+			buffer2[k] = tanhf(acc);
 
 			offset += 16+1;
 		}
@@ -248,7 +248,7 @@ __global__ void __launch_bounds__(512, 4) gpu_automaton_nn_evolve(
 		for(ushort l=0; l<16; l++)
 			acc += cParams[offset+16*k+l] * buffer1[widx + l];
 		acc += cParams[offset+16*k+16];
-		buffer2[k] = acc
+		buffer2[k] = acc;
 
 		offset += 16+1;
 	}

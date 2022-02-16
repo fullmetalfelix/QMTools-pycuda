@@ -12,22 +12,30 @@ basisset = BasisSet("cc-pvdz.bin")
 folder = "../qmtools/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
-
-for i in range(10,3,-1):
+sg = 2
+for i in range(10,3,-5):
 
 	stp = 0.01*i
-	
+	print("step is",stp)
+
 	# template grid - 1 field only
-	templateGrid = Grid.DensityGrid(mol, stp, 3.0)
+	#templateGrid = Grid.DensityGrid(mol, stp, 10.0)
 
-	for sg in range(1,3):
-		
+	#for sg in range(2,3):
 
-		# call density generator
-		qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=sg, copyBack=True)
-		qgrid.SaveBIN('density_29766_{}_{}.bin'.format(stp,sg), mol)
+	# call density generator
+	#qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=sg, copyBack=True)
+	#qgrid.SaveBIN('density-large_29766_{}_{}.bin'.format(stp,sg), mol)
+	#fname = 'density_29766_{}_2.bin'.format(stp)
+	qgrid = Grid.LoadBIN('density-large_29766_{}_{}.bin'.format(stp,sg))
 
-		#print(qgrid)
+	#print(qgrid)
+
+	
+
+	# compute the hartree
+	vgrid = QMTools.Compute_hartree(qgrid, mol, tolerance=0.001, copyBack=True)
+	vgrid.SaveBIN('hartree-large_dgrid_{}_SG2.bin'.format(stp), mol)
 
 
 '''

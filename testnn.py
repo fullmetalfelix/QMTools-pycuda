@@ -1,11 +1,6 @@
-from qmtools import BasisSet, Molecule, Grid, Automaton, QMTools
+from qmtools import BasisSet, Molecule, Grid, AutomatonNN, QMTools
 import numpy
 import pycuda.driver as cuda
-
-
-
-
-
 
 
 
@@ -17,16 +12,15 @@ mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
 gridTemplate = Grid.DensityGrid(mol, 0.1, 3.0)
 
-# test the density generator
-#qref = QMTools.Compute_density(gridTemplate, mol, copyBack=True)
-#numpy.save('pycuda_qref.npy', qref.qube)
-
+# generate the electron grid from the DM and basis set
+qref = QMTools.Compute_density(gridTemplate, mol, copyBack=True)
+numpy.save('pycuda_qref.npy', qref.qube)
 
 #'''
 qref = Grid.emptyAs(gridTemplate)
 qref.LoadData('pycuda_qref.npy')
 
-gvne = QMTools.Compute_VNe(gridTemplate, mol, adsorb=0.1, diff=0.01, tolerance=0.000000001, copyBack=True)
+gvne = QMTools.Compute_VNe(gridTemplate, mol, adsorb=0.1, diff=0.01, tolerance=1.0e-9, copyBack=True)
 gqsd = QMTools.Compute_qseed(gridTemplate, mol, copyBack=True)
 numpy.save('pycuda_vne.npy', gvne.qube)
 numpy.save('pycuda_qseed.npy', gvne.qube)
@@ -61,7 +55,7 @@ atm.Mutate(0.1,0.1,16.0)
 
 
 atm.Initialize(cgrid, gqsd, gvne)
-atm.Evolve(mol, cgrid)
+atm.Evolve(mol, cgrid, maxiter=10, debug=True)
 
 
 #print(atm.Binarize())
