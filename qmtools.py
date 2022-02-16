@@ -9,6 +9,8 @@ from pycuda import gpuarray
 import os
 from enum import IntEnum, unique
 
+import skcuda.fft as cufft
+
 ANG2BOR = 1.8897259886
 
 MAXAOS = 15
@@ -1173,6 +1175,10 @@ class QMTools:
 	fker = open('kernel_hartree.cu')
 	srcHartree = fker.read(); fker.close()
 
+	# add nuclear charge to charge grid
+	fker = open('kernel_fft.cu')
+	srcFFT = fker.read(); fker.close()
+
 	fker = open('kernel_automaton.cu')
 	srcAutomaton = fker.read(); fker.close()
 
@@ -1320,6 +1326,70 @@ class QMTools:
 		return vgrid
 
 
+	### Compute the hartree potential on the grid using FFT
+	###
+	def Compute_hartree_fft(qgrid, molecule, sigma=0.2, cutoff=6):
+
+		print("Preparing FFT kernels")
+		kernel = QMTools.srcFFT
+
+		kernel = kernel.replace('PYCUDA_NATOMS', str(molecule.natoms))
+		kernel = kernel.replace('PYCUDA_GRID_STEP', str(qgrid.step/ANG2BOR)+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_X0', str(qgrid.origin['x']/ANG2BOR)+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Y0', str(qgrid.origin['y']/ANG2BOR)+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Z0', str(qgrid.origin['z']/ANG2BOR)+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_NX', str(qgrid.space_shape()[0]))
+		kernel = kernel.replace('PYCUDA_GRID_NY', str(qgrid.space_shape()[1]))
+		kernel = kernel.replace('PYCUDA_GRID_NZ', str(qgrid.space_shape()[2]))
+
+		kernel = kernel.replace('PYCUDA_SIGMA', str(sigma)+"f")
+		kernel = kernel.replace('PYCUDA_CUTOFF_SQ', str((cutoff*sigma)**2)+"f")
+
+		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+
+		kernel_nuclear = kernel.get_function("gpu_add_nuclear_charge")
+		kernel_nuclear.prepare([numpy.intp, numpy.intp, numpy.intp, numpy.intp])
+
+		kernel_poisson = kernel.get_function("gpu_poisson_frequency_solve")
+		kernel_poisson.prepare([numpy.intp])
+		
+		print("Adding nuclear charge to qube", qgrid.GPUblocks)
+
+		# Make array to hold total charge density. Has to be of GPUArray type to work with
+		# FFT in the next step.
+		q_total_qube = gpuarray.GPUArray(qgrid.space_shape(), dtype=numpy.float32)
+
+		kernel_nuclear.prepared_call(qgrid.GPUblocks, (8,8,8),
+			qgrid.d_qube,
+			q_total_qube.gpudata,
+			molecule.d_types,
+			molecule.d_coords
+		)
+
+		print('Solving the Poisson equation using FFT')
+
+		# Create a temporary complex array for FFT
+		cqube = gpuarray.GPUArray(qgrid.space_shape(), dtype=numpy.complex64)
+
+		# Do forward FFT
+		q_total_qube = q_total_qube.astype(numpy.complex64)
+		plan = cufft.Plan(q_total_qube.shape, numpy.complex64, numpy.complex64)
+		cufft.fft(q_total_qube, cqube, plan)
+
+		# Solve Poisson equation in frequency space
+		kernel_poisson.prepared_call(qgrid.GPUblocks, (8,8,8),
+			cqube.gpudata,
+		)
+
+		# Do inverse FFT
+		plan_inverse = cufft.Plan(q_total_qube.shape, numpy.complex64, numpy.complex64)
+		cufft.ifft(cqube, q_total_qube, plan_inverse, scale=True)
+		
+		vqube = q_total_qube.real.get()
+
+		return vqube
 
 	### Compute the starting guess for the electron density.
 	# The input grid is only a template.
