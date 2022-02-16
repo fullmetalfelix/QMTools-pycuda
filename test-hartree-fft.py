@@ -2,6 +2,7 @@
 from qmtools import BasisSet, Molecule, Grid, QMTools
 import numpy
 import time
+import matplotlib.pyplot as plt
 
 # load the basis set
 basisset = BasisSet("cc-pvdz.bin")
@@ -28,9 +29,18 @@ qgrid = Grid.LoadBIN('density_29766_0.05_2.bin')
 
 print(qgrid.qube.sum())
 
-t0 = time.perf_counter()
-vqube = QMTools.Compute_hartree_fft(qgrid, mol, sigma=0.5, cutoff=6)
-t1 = time.perf_counter()
-print('Hartree FFT time:', t1 - t0)
+plt.figure(figsize=(8, 8))
+for sigma in [0.5, 0.3, 0.2, 0.1, 0.05, 0.03]:
+
+	t0 = time.perf_counter()
+	vqube = QMTools.Compute_hartree_fft(qgrid, mol, sigma=sigma, cutoff=6)
+	t1 = time.perf_counter()
+	print('Hartree FFT time:', t1 - t0)
+
+	plt.plot(vqube[:, 116, 64], label=f'sigma = {sigma}Å')
+
+plt.legend()
+plt.savefig('pot_test.png', dpi=200)
+plt.close()
 
 numpy.save(f'potential_cuda_{step}_{sg}.npy', vqube)
