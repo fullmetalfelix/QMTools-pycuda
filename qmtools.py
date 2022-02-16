@@ -1247,7 +1247,9 @@ class QMTools:
 		kernel = QMTools.srcHartree
 
 		# Q grid
-		kernel = kernel.replace('PYCUDA_NATOMS', str(molecule.natoms))
+		natm = 0
+		if molecule != None: natm = molecule.natoms
+		kernel = kernel.replace('PYCUDA_NATOMS', str(natm))
 		kernel = kernel.replace('PYCUDA_GRID_STEP', str(qgrid.step)+"f")
 
 		kernel = kernel.replace('PYCUDA_GRID_X0', str(qgrid.origin['x'])+"f")
@@ -1263,14 +1265,23 @@ class QMTools:
 		src = kernel
 
 
+		# place some charges near nuclei
+		gqsd = QMTools.Compute_qseed(qgrid, molecule, copyBack=True)
+		rho = Grid.emptyAs(qgrid)
+		# assuming qgrid is initialised also on the CPU
+		rho.qube = gqsd.qube - qgrid.qube
+		cuda.memcpy_htod(rho.d_qube, rho.qube)
+
+
 		# grids for result and computation
 		vgrid = Grid.emptyAs(qgrid)
 		tgrid = Grid.emptyAs(qgrid)
 
 
 		# compute initial guess
-		tmp = -qgrid.qube / (qgrid.step*qgrid.step*qgrid.step)
+		tmp = -qgrid.qube*0 / (qgrid.step*qgrid.step*qgrid.step)
 		cuda.memcpy_htod(vgrid.d_qube, tmp)
+
 		#kernel = src.get_function("gpu_hartree_guess")
 		#kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
 		#kernel.prepared_call(vgrid.GPUblocks, (8,8,8), molecule.d_types, molecule.d_coords, vgrid.d_qube)
@@ -1282,20 +1293,26 @@ class QMTools:
 		
 		print("computing hartree grid from qube", vgrid.GPUblocks)
 		delta = tolerance+1
+		itr = 1
 		while delta > tolerance:
+		#for i in range(1000):
 			
-			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), qgrid.d_qube, vgrid.d_qube, tgrid.d_qube)
-			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), qgrid.d_qube, tgrid.d_qube, vgrid.d_qube)
+			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), rho.d_qube, vgrid.d_qube, tgrid.d_qube)
+			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), rho.d_qube, tgrid.d_qube, vgrid.d_qube)
 
-			# compare v2 and v1 to see if it converged
-			delta = QMTools.Compute_qdiff(vgrid,tgrid)
-			print("{:.8E}".format(delta))
+			if itr % 100 == 0:
+				# compare v2 and v1 to see if it converged
+				delta = QMTools.Compute_qdiff(vgrid,tgrid)
+				print("{0} {1:.8E}".format(itr, delta))
 
+			itr += 1
 
-		kernel = src.get_function("gpu_hartree_add_nuclei")
-		kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
-		kernel.prepared_call(vgrid.GPUblocks, (8,8,8), molecule.d_types, molecule.d_coords, vgrid.d_qube)
-
+		'''
+		if molecule != None:
+			kernel = src.get_function("gpu_hartree_add_nuclei")
+			kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
+			kernel.prepared_call(vgrid.GPUblocks, (8,8,8), molecule.d_types, molecule.d_coords, vgrid.d_qube)
+		'''
 
 		if copyBack:
 			cuda.memcpy_dtoh(vgrid.qube, vgrid.d_qube)

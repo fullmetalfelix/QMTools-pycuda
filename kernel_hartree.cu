@@ -30,7 +30,7 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_guess(
 	int* 		types,
 	float3*		coords, 	// atom coordinates in BOHR
 	float*		V 			// output hartree qube
-){
+	){
 
 	__shared__ int styp[100];
 	__shared__ float3 scoords[100];
@@ -79,7 +79,7 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_iteration(
 	float* 		Q,			// density grid
 	float*		V, 			// current V guess
 	float*		Vout 		// updated V
-){
+	){
 
 	__shared__ float shQ[Bp1_3];
 
@@ -146,9 +146,10 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_iteration(
 	gidx = threadIdx.x + blockIdx.x*B + (threadIdx.y+blockIdx.y*B)*NX + (threadIdx.z+blockIdx.z*B)*NX*NY;
 
 
-	float vnew = shQ[sidx-1]+shQ[sidx+1]+shQ[sidx+Bp1]+shQ[sidx-Bp1]+shQ[sidx+Bp1_2]+shQ[sidx-Bp1_2];
-	vnew *= (STEP*STEP)/6.0f;
-	vnew += Q[gidx]*(STEP)/6.0f;
+	float vnew = shQ[sidx-1]+shQ[sidx+1] + shQ[sidx+Bp1]+shQ[sidx-Bp1] + shQ[sidx+Bp1_2]+shQ[sidx-Bp1_2];
+	vnew -= Q[gidx]/STEP;
+	vnew /= 6.0f;
+	
 
 	if((threadIdx.x+blockIdx.x*B == 0) || (threadIdx.x+blockIdx.x*B == NX-1) || 
 		(threadIdx.y+blockIdx.y*B == 0) || (threadIdx.y+blockIdx.y*B == NY-1) ||
@@ -162,13 +163,47 @@ __global__ void __launch_bounds__(512, 4) gpu_hartree_iteration(
 	Vout[gidx] = vnew;
 }
 
+__global__ void __launch_bounds__(512, 4) gpu_hartree_iteration_crap(
+	float* 		Q,			// density grid
+	float*		V, 			// current V guess
+	float*		Vout 		// updated V
+	){
+
+	// global memory address
+	uint gidx = threadIdx.x + blockIdx.x*B + (threadIdx.y+blockIdx.y*B)*NX + (threadIdx.z+blockIdx.z*B)*NX*NY;
+	int3 r;
+	r.x = threadIdx.x + blockIdx.x*B;
+	r.y = threadIdx.y+blockIdx.y*B;
+	r.z = threadIdx.z+blockIdx.z*B;
+
+	int flag = 1;
+	float vnew = 0;
+
+	if(r.x > 1) vnew += V[gidx-1];
+	if(r.y > 1) vnew += V[gidx-NX];
+	if(r.z > 1) vnew += V[gidx-NX*NY];
+
+	if(r.x < NX-2) vnew += V[gidx+1];
+	if(r.y < NY-2) vnew += V[gidx+NX];
+	if(r.z < NZ-2) vnew += V[gidx+NX*NY];
+
+	vnew = vnew*STEP*STEP/6.0f + Q[gidx]*(STEP)/6.0f;
+
+	if((r.x == 0) || (r.x == NX-1) || 
+		(r.y == 0) || (r.y == NY-1) ||
+		(r.z == 0) || (r.z == NZ-1)){
+		vnew = 0;
+	}
+
+	Vout[gidx] = vnew;
+}
 
 
 __global__ void __launch_bounds__(512, 4) gpu_hartree_add_nuclei(
 	int* 		types,
 	float3*		coords, 	// atom coordinates in BOHR
 	float*		V 			// output hartree qube
-){
+	){
 
 	__shared__ int styp[100];
 	__shared__ float3 scoords[100];

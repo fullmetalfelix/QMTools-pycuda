@@ -13,7 +13,7 @@ folder = "../qmtools/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
 sg = 2
-for i in range(10,3,-1):
+for i in range(10,3,-5):
 
 	stp = 0.01*i
 	print("step is",stp)
@@ -34,8 +34,8 @@ for i in range(10,3,-1):
 	
 
 	# compute the hartree
-	vgrid = QMTools.Compute_hartree(qgrid, mol, copyBack=True)
-	#vgrid.SaveBIN('hartree-large_dgrid_{}_SG2.bin'.format(stp), mol)
+	vgrid = QMTools.Compute_hartree(qgrid, mol, tolerance=0.001, copyBack=True)
+	vgrid.SaveBIN('hartree-large_dgrid_{}_SG2.bin'.format(stp), mol)
 
 
 '''
