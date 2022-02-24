@@ -325,10 +325,12 @@ class Grid:
 		fout.write(struct.pack('f',self.origin['y']))
 		fout.write(struct.pack('f',self.origin['z']))
 
-		for k in range(self.shape[3]):
-			for j in range(self.shape[2]):
-				for i in range(self.shape[1]):
-					fout.write(struct.pack('f',linear[i+j*self.shape[1]+k*self.shape[1]*self.shape[2]]))
+		fout.write(linear.tobytes())
+
+		#for k in range(self.shape[3]):
+		#	for j in range(self.shape[2]):
+		#		for i in range(self.shape[1]):
+		#			fout.write(struct.pack('f',linear[i+j*self.shape[1]+k*self.shape[1]*self.shape[2]]))
 
 		fout.close()
 
@@ -852,6 +854,7 @@ class Automaton:
 		qdiff = QMTools.Compute_qdiff(cgrid, qref, rel)
 		if numpy.isnan(qdiff):
 			qdiff = -9999 + numpy.random.random()
+			self.fitness = qdiff
 		else: 
 			self.fitness = -qdiff
 
@@ -1247,7 +1250,68 @@ class QMTools:
 	### Compute the hartree potential on the grid.
 	### Returns a new grid with the hartree potential.
 	### The output grid has the same specs as the input electron grid.
-	def Compute_hartree(qgrid, molecule, tolerance=1.0e-24, copyBack=True):
+	def Compute_hartree(vgrid, molecule, copyBack=True):
+
+		print("preparing hartree kernel")
+		kernel = QMTools.srcHartree
+
+		# Q grid
+		natm = 0
+		if molecule != None: natm = molecule.natoms
+		kernel = kernel.replace('PYCUDA_NATOMS', str(natm))
+		kernel = kernel.replace('PYCUDA_GRID_STEP', str(vgrid.step)+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_X0', str(vgrid.origin['x'])+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Y0', str(vgrid.origin['y'])+"f")
+		kernel = kernel.replace('PYCUDA_GRID_Z0', str(vgrid.origin['z'])+"f")
+
+		kernel = kernel.replace('PYCUDA_GRID_NX', str(vgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_GRID_NY', str(vgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_GRID_NZ', str(vgrid.shape[3]))
+
+		kernel = kernel.replace('#define NORB 0', '#define NORB {}'.format(molecule.norbs))
+
+		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		src = kernel
+
+
+
+		#kernel = src.get_function("gpu_hartree_guess")
+		#kernel.prepare([numpy.intp, numpy.intp, numpy.intp])
+		#kernel.prepared_call(vgrid.GPUblocks, (8,8,8), molecule.d_types, molecule.d_coords, vgrid.d_qube)
+
+
+		# do jacobi iterations
+		kernel = src.get_function("gpu_hartree_GTO")
+		kernel.prepare([numpy.intp, numpy.intp, numpy.intp, numpy.intp, numpy.intp, numpy.intp, numpy.intp])
+		
+		print("computing hartree grid from qube", vgrid.GPUblocks)
+			
+		kernel.prepared_call(vgrid.GPUblocks, (8,8,8),
+			molecule.d_types,
+			molecule.d_coords,
+			molecule.basisset.d_alphas,
+			molecule.basisset.d_coeffs,
+			molecule.d_ALMOs,
+			molecule.d_dm,
+			vgrid.d_qube
+		)
+		#print("hartree done")
+
+
+		if copyBack:
+			cuda.memcpy_dtoh(vgrid.qube, vgrid.d_qube)
+			print("copied")
+
+		return
+
+
+
+
+	### Compute the hartree potential on the grid.
+	### Returns a new grid with the hartree potential.
+	### The output grid has the same specs as the input electron grid.
+	def Compute_hartree_iter(qgrid, molecule, tolerance=1.0e-24, copyBack=True):
 
 		print("preparing hartree kernel")
 		kernel = QMTools.srcHartree
@@ -1390,6 +1454,7 @@ class QMTools:
 		vqube = q_total_qube.real.get()
 
 		return vqube
+
 
 	### Compute the starting guess for the electron density.
 	# The input grid is only a template.

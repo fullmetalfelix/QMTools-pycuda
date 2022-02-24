@@ -12,6 +12,18 @@ basisset = BasisSet("cc-pvdz.bin")
 folder = "../qmtools/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
+stp = 0.1
+
+vgrid = Grid.DensityGrid(mol, stp, fat=3.0)
+QMTools.Compute_hartree(vgrid, mol, copyBack=True)
+
+print("saving bin...")
+vgrid.SaveBIN('hartree-GTO_{}.bin'.format(stp), mol)
+print(vgrid.qube[0,0,0,0], numpy.mean(vgrid.qube))
+
+
+
+'''
 sg = 2
 for i in range(10,3,-5):
 
@@ -36,7 +48,7 @@ for i in range(10,3,-5):
 	# compute the hartree
 	vgrid = QMTools.Compute_hartree(qgrid, mol, tolerance=0.001, copyBack=True)
 	vgrid.SaveBIN('hartree-large_dgrid_{}_SG2.bin'.format(stp), mol)
-
+'''
 
 '''
 qgrid = QMTools.Compute_density(templateGrid, mol, subgrid=2, copyBack=True)
