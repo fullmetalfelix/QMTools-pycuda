@@ -1,0 +1,15 @@
+#!/bin/bash
+
+#SBATCH --time=4-00:00:00
+#SBATCH --job-name=GASS
+#SBATCH --mem-per-cpu=4000
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1 --constraint='volta|ampere'
+
+
+module load gcc/9.2.0-cuda-nvptx cuda
+source envnew/bin/activate
+export CUPY_CACHE_DIR=/scratch/work/federif1/qmtools-pycuda/cupycache
+
+python train-singleshot.py --populationSize 256 --mutationRate 0.02 --mutationSize 0.1 --logfile gass.log --outfile gass.out.bin --rstfile gass.restart.bin 
+

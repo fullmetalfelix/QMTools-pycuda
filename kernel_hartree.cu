@@ -355,7 +355,7 @@ __global__ void gpu_hartree_GTO(
 
 			//if(p != q) continue;
 
-			// order the orbitals by L on thread 0
+			// order the orbitals by L and m on thread 0
 			if(sidx == 0){
 
 				if(shALMOs[p].y < shALMOs[q].y) { // Lp < Lq => p->A q->B
@@ -839,7 +839,7 @@ factor+= (2*sqrtf(PC2gamma)*(105*powf(rPC.x*rPC.x - rPC.y*rPC.y,2)*powf(gamma,2)
 
 			//if(sidx == 0)
 
-			V -= product; // minus cos the integrals assumed the test charge was positive
+			V += product;
 		}
 	}
 
@@ -854,8 +854,14 @@ factor+= (2*sqrtf(PC2gamma)*(105*powf(rPC.x*rPC.x - rPC.y*rPC.y,2)*powf(gamma,2)
 		c = rC.x - scoords[i].x; r = c*c;
 		c = rC.y - scoords[i].y; r+= c*c;
 		c = rC.z - scoords[i].z; r+= c*c;
+		
 		r = sqrtf(r);
-		V -= stypes[i] / r; // we are calculating the ENERGY for an electron in the grid position.... goes down near nucleus!
+		if(r > 1.0E-8)
+			V += stypes[i] / r;
+
+		// this assumes the nuclear charge is in chi_a^2, an uncontracted s GTO with a=10000
+		//r = sqrtf(r*10000);
+		//V -= 2.4543692606170252E-14 * stypes[i] * erff(r)/r;
 	}
 	
 

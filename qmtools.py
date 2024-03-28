@@ -8,8 +8,9 @@ from pycuda.compiler import SourceModule
 from pycuda import gpuarray
 import os
 from enum import IntEnum, unique
+import requests
 
-import skcuda.fft as cufft
+#import skcuda.fft as cufft
 
 ANG2BOR = 1.8897259886
 
@@ -109,25 +110,38 @@ class Molecule:
 
 	def __init__(self, filexyz, filedm, basisset):
 
-		print("opening molecule (ang):", filexyz)
+		
 		self.basisset = basisset
 
-		m = numpy.loadtxt(filexyz)
+
+		m = None
+		if isinstance(filexyz, list): m = numpy.asarray(filexyz)
+		else:
+			print("opening molecule (ang):", filexyz)
+			m = numpy.loadtxt(filexyz)
+			if len(m.shape) == 1:
+				m = numpy.asarray([m])
 		
 		# make coordinates in bohr
 		m[:,1:] *= ANG2BOR
-		self.types  = numpy.asarray(m[:,0], dtype=numpy.int32)
-		self.coords = numpy.asarray(m[:,1:], dtype=numpy.float32)
+		self.types  = numpy.array(m[:,0], dtype=numpy.int32)
+		self.coords = numpy.array(m[:,1:], dtype=numpy.float32)
 		self.natoms = numpy.int32(self.types.shape[0])
 		# total nuclear charge
 		self.qtot = numpy.int32((numpy.sum(self.types)))
 
 
 		# load the DM
-		print("opening density matrix:", filedm)
-		dm = numpy.load(filedm)
+		dm = None
+		if isinstance(filedm, numpy.ndarray): dm = filedm
+		else:
+
+			print("opening density matrix:", filedm)
+			dm = numpy.load(filedm)
+
+		self.dm = numpy.array(dm, dtype=numpy.float32)
 		self.norbs = numpy.int32(dm.shape[0])
-		self.dm = numpy.asarray(dm, dtype=numpy.float32)
+		
 		print("# of orbitals:",self.norbs)
 		# make the basis
 		self.ALMOs = numpy.zeros((self.norbs, 4)).astype(numpy.int16)
@@ -296,6 +310,18 @@ class Grid:
 
 		return grid
 
+
+	def LoadFromNPY(self, npyarray):
+
+		sizeok = True
+		if len(npyarray.shape) != len(self.qube.shape):
+			raise ValueError("dimensionality mismatch")
+		for i in range(len(self.qube.shape)):
+			if npyarray.shape[i] != self.qube.shape[i]:
+				raise ValueError("array shape mismatch {} (expected {})".format(npyarray.shape, self.qube.shape))
+
+		self.qube = npyarray.astype(numpy.float32)
+		cuda.memcpy_htod(self.d_qube, self.qube)
 
 	### Save in binary format, optionally with a molecule info
 	### This only saves the first field
@@ -762,7 +788,7 @@ class Automaton:
 	## mol: molcule object
 	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
 	## qref: grid with the correct electron density of the molecule
-	def Evolve(self, mol, cgrid, maxiter=1000, tolerance=0.1, debug=False):
+	def Evolve(self, mol, cgrid, qref, maxiter=1000, tolerance=0.1, debug=False):
 
 
 		# setup the GP kernel
@@ -808,8 +834,13 @@ class Automaton:
 		
 		qdiff = tolerance + 1
 		rep = 0
-		
+		convstrikes = 0
+		lastqdiff = 999
+		penalty = 0
+
 		while (qdiff > tolerance or rep < 10) and rep < maxiter:
+
+			rep += 1
 
 			# propagate q,A,B
 			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
@@ -819,32 +850,41 @@ class Automaton:
 			cgrid.d_qube = ogrid.d_qube
 			ogrid.d_qube = tmp
 
-
 			# renormalize q if needed
-			if rep % 1 == 0:
+			if rep % 100 == 0:
 				qtot = QMTools.Compute_qtot(cgrid)
 				#print("step calc {0} -- {1:-5e}".format(rep, qtot))
 				if numpy.abs(qtot-mol.qtot) > 1.0e-3:
 					factor = float(mol.qtot) / qtot
 					#print("rescale",factor)
 					QMTools.Compute_qscale(cgrid, factor)
-					
-
+			
 			if debug:
 				cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
 				cgrid.SaveBINmulti('atmgp.output-{}'.format(rep+1),mol)
 
 			# check if q converged
-			qdiff = QMTools.Compute_qdiff(cgrid, ogrid, rel=False)
+			qdiff = QMTools.Compute_qdiff(cgrid, qref, rel=False)
 			if numpy.isnan(qdiff):
 				print("diff is nan")
-				return False, qdiff
+				return False, penalty * 2
 			
+			penalty += qdiff
+
 			#print(rep, qtot, qdiff)
+			if qdiff > lastqdiff:
+				convstrikes += 1
+			else:
+				convstrikes = 0
 
-			rep += 1
+			if convstrikes == 15:
+				penalty *= 1.2
+				return True, penalty/rep
+			
+			lastqdiff = qdiff
 
-		return True, qdiff
+
+		return True, penalty / rep
 
 
 
@@ -898,6 +938,555 @@ class Automaton:
 				else:
 
 					self.code[i].args += mscale*(2*numpy.random.random(len(self.code[i].args))-1)
+
+# this version of the GP automaton does not use auxiliary fields
+class AutomatonSimple:
+
+
+	def __init__(self):
+
+		self.code = []
+		self.nlayers = 0
+		self.fitness = 0
+
+
+	def Random(nlayers, pscale):
+
+		atm = AutomatonSimple()
+		atm.Randomize(pscale, nlayers)
+
+		return atm
+
+
+
+	## Create a random parameter set.
+	def Randomize(self, pscale, nlayers):
+
+		self.nlayers = nlayers
+
+		# initial constants
+		consts1 = [GPCode(0, pscale*(2*numpy.random.random(1)-1)) for i in range(12)]
+		
+		# first group is the GP for the q/A/B transfer
+		# each layer has 16 instructions,
+		# the last layer is the output with only 4 nodes
+		self.topo1 = [(16,16) for i in range(nlayers)] + [(16,8), (8,4)]
+		ni = 0
+		for t in self.topo1: ni += t[1]
+		code1 = [GPCode.Random(pscale) for i in range(ni)]
+
+		
+		self.code = consts1 + code1
+
+
+	def Initialize(self, cgrid, q0, vne):
+
+		# clear the compute grid
+		cgrid.qube *= 0
+		cuda.memcpy_htod(cgrid.d_qube, cgrid.qube)
+
+		# copy q0(gpu) to cgrid(gpu)-beginning
+		cuda.memcpy_dtod(cgrid.d_qube, q0.d_qube, q0.qube.nbytes)
+
+		# copy vne(gpu) to cgrid(gpu)-offset npts
+		ptr = int(cgrid.d_qube) + int(vne.qube.nbytes)
+		cuda.memcpy_dtod(ptr, vne.d_qube, vne.qube.nbytes)
+
+
+
+
+	## Writes the compute kernel for the genetic program.
+	def WriteCode(self):
+
+		
+		src = QMTools.srcAutomaton
+
+		# compute dna size
+		dnasize = 0
+		for i in self.code: dnasize += len(i.args)
+		src = src.replace('PYCUDA_DNASIZE', str(dnasize))
+		ic = 0
+		ip = 0
+		
+		flag = '// PYCUDA_GENETICPROGRAM_CONSTS_1'
+		codeC = ""
+		# set the last 12 inputs to constants
+		for i in range(12):
+			codeC += "\t\t\tbuffer1[widx+{}] = {:4.6f};\n".format(i+4, self.code[ip].args[0])
+			ic += len(self.code[ip].args)
+			ip += 1
+		src = src.replace(flag, flag+'\n'+codeC)
+
+		# create the code for section 1 - A pass
+		nl = 0
+		flag = '// PYCUDA_GENETICPROGRAM_1'
+		code1 = ""
+		for topo in self.topo1:
+
+			inputSize = topo[0]
+			outputSize = topo[1]
+
+			for i in range(outputSize):
+				c = self.code[ip].WriteCode("buffer1", inputSize, "buffer2", i, flipSub=False, indent=3, constMem=ic)
+				code1 += c
+				ic += len(self.code[ip].args)
+				ip += 1
+
+			if outputSize != 4:
+				code1 += "\t\t\tfor(ushort k=0; k<{}; k++) buffer1[widx + k] = buffer2[k];\n\n".format(outputSize)
+
+			# DEBUG! check if some output was nan
+			#code1 += "\t\t\tfor(ushort k=0; k<{}; k++) if(isnan(buffer2[k])) printf(\"output here was nan [layer {}, output %i]\\n\",k);\n\n".format(outputSize,nl)
+			#nl += 1
+		src = src.replace(flag, flag+'\n'+code1)
+		# --- END OF PROGRAM 1: transfer rates --- #
+
+
+
+		return src
+
+
+
+	## Save the automaton parameters in a bytes string.
+	def Binarize(self):
+
+		bs = b''
+
+		for i in self.code: bs += i.Binarize()
+		
+		bs += struct.pack('f', self.fitness)
+		
+		return bs
+
+
+	## Load the automaton code from a binary string.
+	# The automaton code topology has to be already set
+	# returns the offset of the next byte to read from barray
+	def LoadBinary(self, barray):
+
+		ptr = 0
+
+		# const1 - 8
+		const1 = [GPCode.LoadBinary(barray[i*8:]) for i in range(12)]
+		ptr += 8*12
+		
+
+		# topo1
+		code1 = []
+		for t in self.topo1:
+			for i in range(t[1]):
+
+				gpc = GPCode.LoadBinary(barray[ptr:])
+				code1.append(gpc)
+				ptr += 4 + len(gpc.args)*4
+
+
+
+		self.code = const1 + code1
+
+		self.fitness = struct.unpack('f', barray[ptr:ptr+4])[0]
+		ptr += 4
+
+		print('automaton loaded [fitness={}]'.format(self.fitness))
+		return ptr
+
+	### Compute fitness of this automaton.
+	#
+	## molecule: reference molecule
+	## mol: molcule object
+	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
+	## qref: grid with the correct electron density of the molecule
+	def Evolve(self, mol, cgrid, maxiter=1000, tolerance=0.1, debug=False):
+
+
+		# setup the GP kernel
+		kernel = self.WriteCode()
+
+		# common substitutions
+		kernel = kernel.replace('PYCUDA_NX', str(cgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
+		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
+		#print(kernel)
+
+		if debug: # print the kernel for debug
+			fout = open("atmgp.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
+		# compile
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()])#, options=["--resource-usage"])
+
+		# get the constant memory pointer
+		cp, sb = ptx.get_global('cParams')
+		params = []
+		for i in self.code: params = params + list(i.args)
+		params = numpy.asarray(params).astype(numpy.float32)
+		cuda.memcpy_htod(cp, params) # copy constant params
+
+
+		ptx = ptx.get_function("gpu_automaton_simple_evolve")
+		ptx.prepare([numpy.intp, numpy.intp])
+
+		ogrid = Grid.emptyAs(cgrid)
+
+		qtot = QMTools.Compute_qtot(cgrid)
+
+		# debug save
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			cgrid.SaveBINmulti('atmgp.input',mol)
+			print("qtot at start:", qtot)
+
+		# do evolution
+		
+		qdiff = tolerance + 1
+		rep = 0
+		
+		while (qdiff > tolerance or rep < 10) and rep < maxiter:
+
+			# propagate q,A,B
+			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
+
+			# switch pointers
+			tmp = cgrid.d_qube
+			cgrid.d_qube = ogrid.d_qube
+			ogrid.d_qube = tmp
+
+
+			# renormalize q if needed
+			if rep % 1 == 0:
+				qtot = QMTools.Compute_qtot(cgrid)
+				print("step calc {0} -- {1:-5e}".format(rep, qtot))
+				if numpy.abs(qtot-mol.qtot) > 1.0e-3:
+					factor = float(mol.qtot) / qtot
+					#print("rescale",factor)
+					QMTools.Compute_qscale(cgrid, factor)
+					
+
+			if debug:
+				cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+				cgrid.SaveBINmulti('atmgp.output-{}'.format(rep+1),mol)
+
+			# check if q converged
+			qdiff = QMTools.Compute_qdiff(cgrid, ogrid, rel=False)
+			if numpy.isnan(qdiff):
+				print("diff is nan")
+				return False, qdiff
+			
+			#print(rep, qtot, qdiff)
+
+			rep += 1
+
+		return True, qdiff
+
+
+	def CompareQ(self, cgrid, qref, rel=False):
+
+
+		qdiff = QMTools.Compute_qdiff(cgrid, qref, rel)
+		if numpy.isnan(qdiff):
+			qdiff = -9999 + numpy.random.random()
+			self.fitness = qdiff
+		else: 
+			self.fitness = -qdiff
+
+		return self.fitness
+
+
+	def Mix(a,b):
+
+		r = Automaton()
+		r.topo1 = a.topo1
+		r.nlayers = a.nlayers
+		r.code = []
+
+		for ic in range(len(a.code)):
+			x = numpy.random.random()
+			if x < 0.5: r.code.append(a.code[ic])
+			else: r.code.append(b.code[ic])
+
+		return r
+
+
+	def Mutate(self, amount, mscale, pscale):
+
+		nmuts = int(numpy.ceil(len(self.code) * amount * numpy.random.random()))
+		allidx = numpy.arange(len(self.code)).astype(numpy.int32)
+		
+		idx = numpy.random.choice(allidx, size=nmuts, replace=False)
+		idx = idx.astype(numpy.int32)
+
+
+		for i in idx:
+
+			c = self.code[i]
+			if GPtype(c.type) == GPtype.CONST:
+				self.code[i].args[0] += mscale*(2*numpy.random.random()-1)
+			else:
+				# mutation can mutate the instr args or the whole instr
+				if numpy.random.random() < 0.2:
+					self.code[i] = GPCode.Random(pscale)
+				else:
+
+					self.code[i].args += mscale*(2*numpy.random.random(len(self.code[i].args))-1)
+
+# this version of the GP automaton does not use auxiliary fields and it works in a single shot
+class AutomatonSingleShot:
+
+
+	def __init__(self):
+
+		self.code = []
+		self.nlayers = 0
+		self.fitness = 0
+
+	def Random(nlayers, pscale):
+
+		atm = AutomatonSingleShot()
+		atm.Randomize(pscale, nlayers)
+
+		return atm
+
+	## Create a random parameter set.
+	def Randomize(self, pscale, nlayers):
+
+		self.nlayers = nlayers
+
+		# initial constants
+		consts1 = [GPCode(0, pscale*(2*numpy.random.random(1)-1)) for i in range(14)]
+		
+		# first group is the GP for the q generation
+		# each main layer has 16 instructions,
+		# then there are final layers with 8, 4 and 1 final output
+		self.topo1 = [(16,16), (16,8), (8,1)] # FIXED TOPOLOGY FOR SPEED!
+		#self.topo1 = [(16,16) for i in range(nlayers)] + [(16,8), (8,4), (4,1)]
+		ni = 0
+		for t in self.topo1: ni += t[1]
+		code1 = [GPCode.Random(pscale) for i in range(ni)]
+		
+		self.code = consts1 + code1
+
+	def Initialize(self, cgrid, vne):
+
+		# clear the compute grid
+		cgrid.qube *= 0
+		cuda.memcpy_htod(cgrid.d_qube, cgrid.qube)
+
+		# copy vne(gpu) to cgrid(gpu)-offset npts
+		ptr = int(cgrid.d_qube) + int(vne.qube.nbytes)
+		cuda.memcpy_dtod(ptr, vne.d_qube, vne.qube.nbytes)
+
+	## Writes the compute kernel for the genetic program.
+	def WriteCode(self):
+		
+		src = QMTools.srcAutomaton
+
+		# compute dna size
+		dnasize = 0
+		for i in self.code: dnasize += len(i.args)
+		src = src.replace('PYCUDA_DNASIZE', str(dnasize))
+		ic = 0
+		ip = 0
+		
+		flag = '// PYCUDA_GENETICPROGRAM_CONSTS_1'
+		codeC = ""
+		# set the last 14 inputs to constants
+		for i in range(14):
+			codeC += "\t\tbuffer1[widx+{}] = {:4.6f};\n".format(i+2, self.code[ip].args[0])
+			ic += len(self.code[ip].args)
+			ip += 1
+		src = src.replace(flag, flag+'\n'+codeC)
+
+		# create the code for section 1 - A pass
+		nl = 0
+		flag = '// PYCUDA_GENETICPROGRAM_1'
+		code1 = ""
+		for topo in self.topo1:
+
+			inputSize = topo[0]
+			outputSize = topo[1]
+
+			for i in range(outputSize):
+				c = self.code[ip].WriteCode("buffer1", inputSize, "buffer2", i, flipSub=False, indent=3, constMem=ic)
+				code1 += c
+				ic += len(self.code[ip].args)
+				ip += 1
+
+			if outputSize != 4:
+				code1 += "\t\tfor(ushort k=0; k<{}; k++) buffer1[widx + k] = buffer2[k];\n\n".format(outputSize)
+
+			# DEBUG! check if some output was nan
+			#code1 += "\t\t\tfor(ushort k=0; k<{}; k++) if(isnan(buffer2[k])) printf(\"output here was nan [layer {}, output %i]\\n\",k);\n\n".format(outputSize,nl)
+			#nl += 1
+		src = src.replace(flag, flag+'\n'+code1)
+		# --- END OF PROGRAM 1: transfer rates --- #
+
+		return src
+
+	## Save the automaton parameters in a bytes string.
+	def Binarize(self):
+
+		bs = b''
+
+		for i in self.code: bs += i.Binarize()
+		
+		bs += struct.pack('f', self.fitness)
+		
+		return bs
+
+	## Load the automaton code from a binary string.
+	# The automaton code topology has to be already set
+	# returns the offset of the next byte to read from barray
+	def LoadBinary(self, barray):
+
+		ptr = 0
+
+		# const1 - 8
+		const1 = [GPCode.LoadBinary(barray[i*8:]) for i in range(14)]
+		ptr += 8*14
+		
+
+		# topo1
+		code1 = []
+		for t in self.topo1:
+			for i in range(t[1]):
+
+				gpc = GPCode.LoadBinary(barray[ptr:])
+				code1.append(gpc)
+				ptr += 4 + len(gpc.args)*4
+
+
+
+		self.code = const1 + code1
+
+		self.fitness = struct.unpack('f', barray[ptr:ptr+4])[0]
+		ptr += 4
+
+		print('automaton loaded [fitness={}]'.format(self.fitness))
+		return ptr
+
+	### Compute fitness of this automaton.
+	#
+	## molecule: reference molecule
+	## mol: molcule object
+	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
+	## qref: grid with the correct electron density of the molecule
+	def SingleShot(self, mol, cgrid, qref, debug=False, copyBack=False):
+
+		# setup the GP kernel
+		kernel = self.WriteCode()
+
+		# common substitutions
+		kernel = kernel.replace('PYCUDA_NX', str(cgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
+		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
+
+		if debug: # print the kernel for debug
+			fout = open("gpss.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
+		# compile
+		opts = []
+		if debug: opts = ["--resource-usage"]
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+
+		# get the constant memory pointer
+		cp, sb = ptx.get_global('cParams')
+		params = []
+		for i in self.code: params = params + list(i.args)
+		params = numpy.asarray(params).astype(numpy.float32)
+		cuda.memcpy_htod(cp, params) # copy constant params
+
+
+		ptx = ptx.get_function("gpu_automaton_simple_singleshot")
+		ptx.prepare([numpy.intp, numpy.intp])
+
+		ogrid = Grid.emptyAs(cgrid)
+
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			numpy.save('gpss.input.npy', cgrid.qube)
+
+		# evaluate
+		ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
+
+		# compare the ogrid to the refgrid (only the first field)
+		qdiff = QMTools.Compute_qdiff(ogrid, qref, rel=False)
+
+		if debug:
+			print("automaton GP[SS] qdiff {}".format(qdiff))
+			cuda.memcpy_dtoh(ogrid.qube, ogrid.d_qube)
+			numpy.save('atm.gpss.output.npy', ogrid.qube)
+
+		if copyBack:
+			# copy to the input cgrid
+			cuda.memcpy_dtoh(ogrid.qube, ogrid.d_qube)
+			cgrid.qube = ogrid.qube
+			cgrid.d_qube = ogrid.d_qube
+
+		if numpy.isnan(qdiff):
+			print("diff is nan")
+			return -cgrid.npts*mol.qtot
+			
+
+		return -qdiff
+		
+
+	def CompareQ(self, cgrid, qref, rel=False):
+
+
+		qdiff = QMTools.Compute_qdiff(cgrid, qref, rel)
+		if numpy.isnan(qdiff):
+			qdiff = -9999 + numpy.random.random()
+			self.fitness = qdiff
+		else: 
+			self.fitness = -qdiff
+
+		return self.fitness
+
+
+	def Mix(a,b):
+
+		r = a.__class__()
+		r.topo1 = a.topo1
+		r.nlayers = a.nlayers
+		r.code = []
+		
+		for ic in range(len(a.code)):
+			x = numpy.random.random()
+			if x < 0.5: r.code.append(a.code[ic])
+			else: r.code.append(b.code[ic])
+
+		return r
+
+
+	def Mutate(self, amount, mscale, pscale):
+
+		nmuts = int(numpy.ceil(len(self.code) * amount * numpy.random.random()))
+		allidx = numpy.arange(len(self.code)).astype(numpy.int32)
+		
+		idx = numpy.random.choice(allidx, size=nmuts, replace=False)
+		idx = idx.astype(numpy.int32)
+
+
+		for i in idx:
+
+			c = self.code[i]
+			if GPtype(c.type) == GPtype.CONST:
+				self.code[i].args[0] += mscale*(2*numpy.random.random()-1)
+			else:
+				# mutation can mutate the instr args or the whole instr
+				if numpy.random.random() < 0.2:
+					self.code[i] = GPCode.Random(pscale)
+				else:
+
+					self.code[i].args += mscale*(2*numpy.random.random(len(self.code[i].args))-1)
+
+
+
 
 ### Automaton object - NEURAL NETS
 class AutomatonNN:
@@ -1143,6 +1732,594 @@ class AutomatonNN:
 			if x < 0.5: self.absAB[0] = numpy.random.random()*0.4
 			else: self.absAB[0] = numpy.random.random()*0.4
 
+class AutomatonNNSimple:
+
+	"""
+	This is a neural network based automaton.
+	The NN has 2+2 inputs: 2 for the current voxel and 2 for the neighoubring one.
+	The inputs per voxel are the charge and the VNe.
+	The output is the charge transfer between the voxels.
+
+	There is no extra information stored in the grid (no A/B fields)
+	
+
+	"""
+
+
+	def __init__(self):
+
+		self.params = []
+		self.nlayers = []
+		self.fitness = 0
+		self.dnasize = 0
+		self.fitness = -9999
+
+
+	def Random(nl1, pscale):
+		"""
+		Create a randomised NN automaton with 16 neurons in each of the nl1 layers.
+		An additional output layer will be added to take the 16 outputs of the nl1-th layer and
+		calculate the final single output value (the charge transfer between neighbouring voxels).
+		All random parameters are uniformly distributed between -pscale and +pscale. 
+		"""
+
+		atm = AutomatonNNSimple()
+		atm.Randomize(pscale, nl1)
+
+		return atm
+
+
+
+	## Create a random parameter set.
+	def Randomize(self, pscale, nl1=4):
+
+		self.nlayers = [nl1]
+		self.dnasize = 16*16*nl1 + 16*nl1 + (16*1 + 1) # charge transfer NN
+		self.dnasize+= 12 # extra constants for the input layer to fill it up to 16 values
+
+		self.params = (2*numpy.random.random(self.dnasize)-1)*pscale
+		self.params = self.params.astype(numpy.float32)
+
+
+	def Initialize(self, cgrid, q0, vne):
+
+		# clear the compute grid
+		cgrid.qube *= 0
+		cuda.memcpy_htod(cgrid.d_qube, cgrid.qube)
+
+		# copy q0(gpu) to cgrid(gpu)-beginning -- make sure to copy only one field
+		cuda.memcpy_dtod(cgrid.d_qube, q0.d_qube, int(q0.npts * 4))
+
+		# copy vne(gpu) to cgrid(gpu)-offset npts
+		ptr = int(cgrid.d_qube) + int(q0.npts * 4) #int(vne.qube.nbytes)
+		cuda.memcpy_dtod(ptr, vne.d_qube, vne.qube.nbytes)
+
+
+
+
+	## Writes the compute kernel for the genetic program.
+	def WriteCode(self):
+
+		
+		src = QMTools.srcAutomatonNN
+
+		src = src.replace('PYCUDA_DNASIZE', str(self.dnasize))
+		src = src.replace('PYCUDA_NL1', str(self.nlayers[0]))
+		src = src.replace('PYCUDA_NL2', str(0))
+
+		src = src.replace('PYCUDA_ABS_A', str(0))
+		src = src.replace('PYCUDA_ABS_B', str(0))
+
+		return src
+
+
+	## Save the automaton parameters in a bytes string.
+	def Binarize(self):
+
+		bs = b''
+
+		for i in self.params:
+			bs += struct.pack('f', i)
+		
+		bs += struct.pack('f', self.fitness)
+
+		return bs
+
+
+	## Load the automaton code from a binary string.
+	# The automaton code topology has to be already set
+	# returns the offset of the next byte to read from barray
+	def LoadBinary(self, barray):
+
+		ptr = 0
+		
+		# read the big params
+		for i in range(self.params.shape[0]):
+			self.params[i] = struct.unpack('f', barray[ptr:ptr+4])[0]
+			ptr += 4
+
+		self.fitness = struct.unpack('f', barray[ptr:ptr+4])[0]
+		ptr += 4
+
+		print('automaton NN simple loaded [fitness={}]'.format(self.fitness))
+		return ptr
+
+	### Compute fitness of this automaton.
+	#
+	## molecule: reference molecule
+	## mol: molcule object
+	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
+	## qref: grid with the correct electron density of the molecule
+	def Evolve(self, mol, cgrid, qref, maxiter=1000, tolerance=0.1, debug=False, copyBack=False):
+
+		# setup the GP kernel
+		kernel = self.WriteCode()
+
+		# common substitutions
+		kernel = kernel.replace('PYCUDA_NX', str(cgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
+		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
+		
+		if debug: # print the kernel for debug
+			fout = open("atm.gans.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
+		# compile
+		opts = []
+		if debug: opts = ["--resource-usage"]
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+
+		# get the constant memory pointer
+		cp, sb = ptx.get_global('cParams')
+		params = numpy.asarray(self.params).astype(numpy.float32)
+		cuda.memcpy_htod(cp, params) # copy constant params
+
+
+		ptx = ptx.get_function("gpu_automaton_nn_simple_evolve")
+		ptx.prepare([numpy.intp, numpy.intp])
+
+		ogrid = Grid.emptyAs(cgrid)
+		
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			#cgrid.SaveBINmulti('atm.gans.input',mol)
+			numpy.save('atm.gans.input.npy', cgrid.qube)
+			qtot = QMTools.Compute_qtot(cgrid)
+			print("qtot at start:", qtot)
+
+
+		# do evolution
+		qdiff = tolerance + 1
+		rep = 0
+		lastqdiff = 0
+		convstrikes = 0
+		penalty = 0
+
+		while (qdiff > tolerance or rep < 10) and rep < maxiter:
+
+			# propagate q,A,B
+			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
+
+			# switch pointers
+			tmp = cgrid.d_qube
+			cgrid.d_qube = ogrid.d_qube
+			ogrid.d_qube = tmp
+
+			# renormalize q if needed
+			if rep % 100 == 0:
+				qtot = QMTools.Compute_qtot(cgrid)
+				if numpy.abs(qtot-mol.qtot) > 1.0e-3:
+					factor = float(mol.qtot) / qtot
+					QMTools.Compute_qscale(cgrid, factor)
+
+				#cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+				#numpy.save('atm.output-{}.npy'.format(rep+1), cgrid.qube)
+
+			if debug and rep % 100 == 0:
+				qtot = QMTools.Compute_qtot(cgrid)
+				cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+				#cgrid.SaveBINmulti('atm.output-{}'.format(rep+1),mol)
+				numpy.save('atm.gans.output-{}.npy'.format(rep+1), cgrid.qube)
+
+			# check if q converged - compute difference between current q grid and previous
+			# check if it is converging towards the right solution!
+			qdiff = QMTools.Compute_qdiff(cgrid, qref, rel=False)
+			penalty += qdiff
+			if debug: print("iteration {}: penalty {} qdiff {} qtot {}".format(rep, penalty/(rep+1), qdiff, qtot))
+			#print("iteration {}: penalty {} qdiff {}".format(rep, penalty, qdiff))
+
+			if numpy.isnan(qdiff):
+				print("diff is nan")
+				penalty *= 2
+				break
+			
+			# we have to punish non-convergent behaviour
+			# qdiff should become smaller over time
+			if qdiff >= lastqdiff:
+				convstrikes += 1
+			else: # if qdiff decreased, reduce the penalty
+				convstrikes = 0
+
+			rep += 1
+
+			# with enough strikes the automaton is OUT!
+			if convstrikes == 15:
+				penalty *= 1.2
+				break
+
+			lastqdiff = qdiff
+			
+
+		if copyBack:
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+
+		if debug:
+			qtot = QMTools.Compute_qtot(cgrid)
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			numpy.save('atm.gans.output-{}.npy'.format(rep+1), cgrid.qube)
+
+		penalty /= rep
+		return True, penalty
+
+	def Evaluate(self, mol, cgrid, qref, steps=10, debug=False, copyBack=False):
+
+		# setup the GP kernel
+		kernel = self.WriteCode()
+
+		# common substitutions
+		kernel = kernel.replace('PYCUDA_NX', str(cgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
+		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
+		
+		if debug: # print the kernel for debug
+			fout = open("atm.gans.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
+		# compile
+		opts = []
+		if debug: opts = ["--resource-usage"]
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+
+		# get the constant memory pointer
+		cp, sb = ptx.get_global('cParams')
+		params = numpy.asarray(self.params).astype(numpy.float32)
+		cuda.memcpy_htod(cp, params) # copy constant params
+
+
+		ptx = ptx.get_function("gpu_automaton_nn_simple_evolve")
+		ptx.prepare([numpy.intp, numpy.intp])
+
+		ogrid = Grid.emptyAs(cgrid)
+		
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			#cgrid.SaveBINmulti('atm.gans.input',mol)
+			numpy.save('atm.gans.input.npy', cgrid.qube)
+			qtot = QMTools.Compute_qtot(cgrid)
+			print("qtot at start:", qtot)
+
+
+		rep = 0
+		lastqdiff = 0
+		convstrikes = 0
+		penalty = 0
+
+		for rep in range(steps):
+
+			# setup the cgrid with some initial q
+			# TODO: ...
+
+			# make sure the VNe is always there?
+
+
+			# compute how bad the initial guess is
+			qdiff0 = QMTools.Compute_qdiff(cgrid, qref, rel=False)
+
+			# propagate q
+			ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
+			# now ogrid has the updated charge
+
+
+			if debug:
+				cuda.memcpy_dtoh(ogrid.qube, ogrid.d_qube)
+				numpy.save('atm.gans.output-{}.npy'.format(rep+1), ogrid.qube)
+
+			# check if q converged - compute difference between current q grid and previous
+			# check if it is converging towards the right solution!
+			qdiff = QMTools.Compute_qdiff(ogrid, qref, rel=False)
+			deltaqdiff = qdiff - qdiff0
+
+			if debug: print("iteration {}: penalty {} improvement {}".format(rep, penalty, deltaqdiff))
+
+			# deltaqdiff < 0 => the solution improved the initial guess
+			# deltaqdiff >=0 => no improvement
+			# ideally we want qdiff < qdiff0 i.e. the automaton made the solution better
+
+			penalty += numpy.exp(deltaqdiff)
+
+			
+
+		if copyBack:
+			cuda.memcpy_dtoh(cgrid.qube, ogrid.d_qube)
+
+
+		penalty /= steps
+		return True, penalty
+
+
+	def CompareQ(self, cgrid, qref, rel=False):
+
+
+		qdiff = QMTools.Compute_qdiff(cgrid, qref, rel)
+		if numpy.isnan(qdiff):
+			self.fitness = -9999 + numpy.random.random()
+		else: 
+			self.fitness = -qdiff
+
+		return self.fitness
+
+
+	def Mix(a,b):
+
+		r = a.__class__()
+		r.nlayers = a.nlayers
+		r.params = numpy.copy(a.params)
+		r.dnasize = a.dnasize
+
+		for i in range(a.params.shape[0]):
+
+			x = numpy.random.random()
+			if x < 0.5: r.params[i] = a.params[i]
+			else: r.params[i] = b.params[i]
+
+		return r
+
+
+	def Mutate(self, amount, mscale, pscale):
+
+		mutagen = (2*numpy.random.random(self.dnasize)-1)*mscale
+		mutagen = mutagen.astype(numpy.float32)
+
+		mask = numpy.random.random(self.dnasize).astype(numpy.float32)
+		mask[mask>amount] = 0
+
+		self.params += mutagen*mask
+
+class AutomatonNNSingleShot:
+
+	"""
+	This is a neural network based automaton.
+	The NN has 2+2 inputs: 2 for the current voxel and 2 for the neighoubring one.
+	The inputs per voxel are the charge and the VNe.
+	The output is the charge transfer between the voxels.
+	"""
+
+
+	def __init__(self):
+
+		self.params = []
+		self.nlayers = []
+		self.fitness = 0
+		self.dnasize = 0
+		self.fitness = -9999
+
+	def Random(nl1, pscale):
+		"""
+		Create a randomised NN automaton with 16 neurons in each of the nl1 layers.
+		An additional output layer will be added to take the 16 outputs of the nl1-th layer and
+		calculate the final single output value (the charge transfer between neighbouring voxels).
+		All random parameters are uniformly distributed between -pscale and +pscale. 
+		"""
+
+		atm = AutomatonNNSingleShot()
+		atm.Randomize(pscale, nl1)
+
+		return atm
+
+
+
+	## Create a random parameter set.
+	def Randomize(self, pscale, nl1=4):
+
+		self.nlayers = [nl1]
+		self.dnasize = 16*16*nl1 + 16*nl1 + (16*1 + 1) # charge transfer NN
+		self.dnasize+= 14 # extra constants for the input layer to fill it up to 16 values
+
+		self.params = (2*numpy.random.random(self.dnasize)-1)*pscale
+		self.params = self.params.astype(numpy.float32)
+
+
+	def Initialize(self, cgrid, q0, vne):
+
+		# cgrid: compute grid for output
+
+		# clear the compute grid
+		cgrid.qube *= 0
+		cuda.memcpy_htod(cgrid.d_qube, cgrid.qube)
+
+		# copy q0(gpu) to cgrid(gpu)-beginning
+		#cuda.memcpy_dtod(cgrid.d_qube, q0.d_qube, q0.qube.nbytes)
+
+		# copy vne(gpu) to cgrid(gpu)-offset npts
+		ptr = int(cgrid.d_qube) + int(vne.qube.nbytes)
+		cuda.memcpy_dtod(ptr, vne.d_qube, vne.qube.nbytes)
+
+
+
+
+	## Writes the compute kernel for the genetic program.
+	def WriteCode(self):
+
+		
+		src = QMTools.srcAutomatonNN
+
+		src = src.replace('PYCUDA_DNASIZE', str(self.dnasize))
+		src = src.replace('PYCUDA_NL1', str(self.nlayers[0]))
+		src = src.replace('PYCUDA_NL2', str(0))
+
+		src = src.replace('PYCUDA_ABS_A', str(0))
+		src = src.replace('PYCUDA_ABS_B', str(0))
+
+		return src
+
+
+	## Save the automaton parameters in a bytes string.
+	def Binarize(self):
+
+		bs = b''
+
+		for i in self.params:
+			bs += struct.pack('f', i)
+		
+		bs += struct.pack('f', self.fitness)
+
+		return bs
+
+
+	## Load the automaton code from a binary string.
+	# The automaton code topology has to be already set
+	# returns the offset of the next byte to read from barray
+	def LoadBinary(self, barray):
+
+		ptr = 0
+		
+		# read the big params
+		for i in range(self.params.shape[0]):
+			self.params[i] = struct.unpack('f', barray[ptr:ptr+4])[0]
+			ptr += 4
+
+		self.fitness = struct.unpack('f', barray[ptr:ptr+4])[0]
+		ptr += 4
+
+		print('automaton NNSS loaded [fitness={}]'.format(self.fitness))
+		return ptr
+
+	### Compute fitness of this automaton.
+	#
+	## molecule: reference molecule
+	## mol: molcule object
+	## cgrid: computing grid, must be already initialised with q0 and vne in channels 0 and 1
+	## qref: grid with the correct electron density of the molecule
+	def SingleShot(self, mol, cgrid, qref, debug=False, copyBack=False):
+
+		# setup the GP kernel
+		kernel = self.WriteCode()
+
+		# common substitutions
+		kernel = kernel.replace('PYCUDA_NX', str(cgrid.shape[1]))
+		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
+		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
+		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
+		
+		if debug: # print the kernel for debug
+			fout = open("atm.kernel.txt","w")
+			fout.write(kernel)
+			fout.close()
+
+		# compile
+		opts = []
+		if debug: opts = ["--resource-usage"]
+		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+
+		# get the constant memory pointer
+		cp, sb = ptx.get_global('cParams')
+		params = numpy.asarray(self.params).astype(numpy.float32)
+		cuda.memcpy_htod(cp, params) # copy constant params
+
+		ptx = ptx.get_function("gpu_automaton_nn_singleshot")
+		ptx.prepare([numpy.intp, numpy.intp])
+
+		# output grid
+		ogrid = Grid.emptyAs(cgrid)
+
+		if debug: # debug save
+			cuda.memcpy_dtoh(cgrid.qube, cgrid.d_qube)
+			cgrid.SaveBINmulti('atm.input',mol)
+			numpy.save('atm.nnss.input.npy', cgrid.qube)
+			numpy.save('atm.nnss.qref.npy', qref.qube)
+			#print("qtot at start:", qtot)
+
+
+		# compute q from VNe
+		ptx.prepared_call(cgrid.GPUblocks, (8,8,8), cgrid.d_qube, ogrid.d_qube)
+
+		# compare the ogrid to the refgrid (only the first field)
+		qdiff = QMTools.Compute_qdiff(ogrid, qref, rel=False)
+
+		if debug:
+			print("automaton NN[SS] qdiff {}".format(qdiff))
+			cuda.memcpy_dtoh(ogrid.qube, ogrid.d_qube)
+			numpy.save('atm.nnss.output.npy', ogrid.qube)
+
+		if copyBack:
+			cuda.memcpy_dtoh(ogrid.qube, ogrid.d_qube)
+			cgrid.qube = ogrid.qube
+			cgrid.d_qube = ogrid.d_qube
+
+
+		if numpy.isnan(qdiff):
+			print("diff is nan")
+			return -999
+			
+
+		return -qdiff
+
+
+
+
+	def CompareQ(self, cgrid, qref, rel=False):
+
+
+		qdiff = QMTools.Compute_qdiff(cgrid, qref, rel)
+		if numpy.isnan(qdiff):
+			self.fitness = -9999 + numpy.random.random()
+		else: 
+			self.fitness = -qdiff
+
+		return self.fitness
+
+
+	def Mix(a,b):
+
+		r = a.__class__()
+		r.nlayers = a.nlayers
+		r.params = numpy.copy(a.params)
+		r.dnasize = a.dnasize
+
+		for i in range(a.params.shape[0]):
+
+			x = numpy.random.random()
+			if x < 0.5: r.params[i] = a.params[i]
+			else: r.params[i] = b.params[i]
+
+		return r
+
+
+	def Mutate(self, amount, mscale, pscale):
+
+		mutagen = (2*numpy.random.random(self.dnasize)-1)*mscale
+		mutagen = mutagen.astype(numpy.float32)
+
+		mask = numpy.random.random(self.dnasize).astype(numpy.float32)
+		mask[mask>amount] = 0
+
+		self.params += mutagen*mask
+
+
+
+
+
+
+
+
+
+
+
+
 
 class QMTools:
 
@@ -1185,18 +2362,20 @@ class QMTools:
 	fker = open('kernel_automaton.cu')
 	srcAutomaton = fker.read(); fker.close()
 
-	fker = open('kernel_automaton_nn.cu')
-	srcAutomatonNN = fker.read(); fker.close()
+	#fker = open('kernel_automaton_nn.cu')
+	#srcAutomatonNN = fker.read(); fker.close()
 
 	h_qtot = numpy.zeros(1).astype(numpy.float32)
-	d_qtot = cuda.mem_alloc(sizeofFloat)
+	d_qtot = cuda.mem_alloc(4) # one float
+
+
 
 
 
 	### Compute the electron density on the grid, for a given molecule.
 	### function tested and works up to 10^-6!
 	### Returns a new grid with the same shape as the input one.
-	def Compute_density(grid, molecule, subgrid=1, copyBack=True):
+	def Compute_density(grid, molecule, subgrid=1, copyBack=True, debug=False):
 
 		print("preparing density kernel")
 		kernel = QMTools.srcDensity
@@ -1209,8 +2388,9 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_SUBGRIDiV', str(1.0/(subgrid*subgrid*subgrid))+"f")
 
 		#print(kernel)
-
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		opts = []
+		if debug: opts.append("--resource-usage")
+		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
 		kernel = kernel.get_function("gpu_densityqube_shmem_subgrid")
 		kernel.prepare([
 			numpy.float32, gpuarray.vec.float3,
@@ -1491,7 +2671,7 @@ class QMTools:
 
 	### Computes the VNe of a molecule and stores it the returned grid
 	# The input grid is only used as a template.
-	def Compute_VNe(grid, molecule, adsorb=0.1, diff=0.01, tolerance=1.0e-9, copyBack=True):
+	def Compute_VNe(grid, molecule, adsorb=0.1, diff=0.01, tolerance=1.0e-9, maxiters=None, copyBack=True):
 
 		print("computing VNe on new grid...")
 
@@ -1523,6 +2703,10 @@ class QMTools:
 
 		h_delta[0] = 1
 		niter = 0
+		
+		if maxiters is None:
+			maxiters = 10*numpy.power(grid.npts,1.0/3)
+
 		while h_delta[0] > tolerance:
 			kernel.prepared_call(grid.GPUblocks, (8,8,8),
 				molecule.d_types,
@@ -1548,14 +2732,61 @@ class QMTools:
 			h_delta /= grid.npts
 			
 			niter += 1
-			if niter > 10*numpy.power(grid.npts,1.0/3):
-				print("VNe not converged!")
+			if niter > maxiters:
+				print("VNe not converged!", h_delta, maxiters)
 				break
 
 		if copyBack:
 			cuda.memcpy_dtoh(gridres.qube, gridres.d_qube)
 		
 		return gridres
+
+
+	### Computes the VNe of a molecule and stores it the returned grid
+	# The input grid is only used as a template.
+	def Compute_VNe_classic(grid, molecule, divisions=4, copyBack=True):
+
+		print("computing VNe(classic) on new grid...")
+
+		# setup the kernel
+		fker = open('kernel_vne_classic.cu')
+		kernel = fker.read(); fker.close()
+		kernel = kernel.replace('PYCUDA_NATOMS',str(molecule.natoms))
+		kernel = kernel.replace('PYCUDA_NX',str(grid.shape[1]))
+		kernel = kernel.replace('PYCUDA_NY',str(grid.shape[2]))
+		kernel = kernel.replace('PYCUDA_NZ',str(grid.shape[3]))
+
+		kernel = kernel.replace('PYCUDA_X0',str(grid.origin['x']))
+		kernel = kernel.replace('PYCUDA_Y0',str(grid.origin['y']))
+		kernel = kernel.replace('PYCUDA_Z0',str(grid.origin['z']))
+
+
+		kernel = kernel.replace('PYCUDA_DX',str(grid.step))
+		kernel = kernel.replace('PYCUDA_NDIV',str(divisions))
+		kernel = kernel.replace('PYCUDA_dx',str(grid.step/divisions))
+
+
+		kernel = SourceModule(kernel, include_dirs=[os.getcwd()])
+		kernel = kernel.get_function("gpu_vne_classic")
+		kernel.prepare([
+			numpy.intp,numpy.intp,
+			numpy.intp,
+		])
+
+		gridout = Grid.emptyAs(grid, nfields=1)
+		
+		kernel.prepared_call(grid.GPUblocks, (8,8,8),
+			molecule.d_types,
+			molecule.d_coords,
+			gridout.d_qube,
+		)
+
+		if copyBack:
+			cuda.memcpy_dtoh(gridout.qube, gridout.d_qube)
+		
+		return gridout
+
+
 
 
 	### Compute the total charge in a multigrid (first channel)
@@ -1565,14 +2796,16 @@ class QMTools:
 		cuda.memcpy_htod(QMTools.d_qtot, QMTools.h_qtot)
 		QMTools.kernelTotal.prepared_call(grid.GPUblocks, (8,8,8), grid.d_qube, QMTools.d_qtot)
 		cuda.memcpy_dtoh(QMTools.h_qtot, QMTools.d_qtot)
-
+		
 		return float(QMTools.h_qtot[0])
 
 
 	### Compute the total charge in a multigrid (first channel)
-	def Compute_qscale(grid, factor):
+	def Compute_qscale(grid, factor, copyBack=False):
 
 		QMTools.kernelRescale.prepared_call(grid.GPUblocks, (8,8,8), grid.d_qube, factor)
+		if copyBack:
+			cuda.memcpy_dtoh(grid.qube, grid.d_qube)
 		return
 
 
@@ -1593,3 +2826,7 @@ class QMTools:
 		if rel: result *= 100.0
 
 		return result
+
+
+
+
