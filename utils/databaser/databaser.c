@@ -118,8 +118,6 @@ float IntegralFunction(float rac2, float dx, int Zc) {
 float compute_density(molecule *mol, float3 v, float dx, int nsubdivs) {
 
 	float charge = 0;
-	float3 v0;
-	float3 vp;
 
 	// lateral size of the subgrid voxel
 	float ddx = dx / nsubdivs;
@@ -128,6 +126,21 @@ float compute_density(molecule *mol, float3 v, float dx, int nsubdivs) {
 	float SUBGRIDiV = 1.0f/(ddx*ddx*ddx);
 	float SUBGRIDV = ddx*ddx*ddx;
 
+	int nsubdivs_total = nsubdivs * nsubdivs * nsubdivs;
+	float3 subgrid_points[nsubdivs_total];
+	int i_subdiv = 0;
+	for(uint16_t ix=0; ix<nsubdivs; ix++) {
+		for(uint16_t iy=0; iy<nsubdivs; iy++)  {
+			for(uint16_t iz=0; iz<nsubdivs; iz++) {
+				subgrid_points[i_subdiv] = (float3){
+					v.x - 0.5*dx + (ix+0.5)*ddx,
+					v.y - 0.5*dx + (iy+0.5)*ddx,
+					v.z - 0.5*dx + (iz+0.5)*ddx,
+				};
+				i_subdiv++;
+			}
+		}
+	}
 
 	float *ap, *cp;
 	float *aq, *cq;
@@ -135,81 +148,72 @@ float compute_density(molecule *mol, float3 v, float dx, int nsubdivs) {
 	int norb = mol->norb;
 	short *almos = mol->almos;
 
-
-
-
 	for(uint16_t p=0; p<norb; ++p) { // loop over DM rows
 
 		ap = &(mol->alphas[almos[p*4 + 3]]);
 		cp = &(mol->coeffs[almos[p*4 + 3]]);
 
-		for(uint16_t q=0; q<=p; ++q) { // loop over DM columns
+		float3 p_xyz = {
+			mol->xyz[almos[p*4]*3 + 0],
+			mol->xyz[almos[p*4]*3 + 1],
+			mol->xyz[almos[p*4]*3 + 2],
+		};
 
-			float3 voxpos;
+		for(uint16_t q=0; q<=p; ++q) { // loop over DM columns
 
 			aq = &(mol->alphas[mol->almos[q*4 + 3]]);
 			cq = &(mol->coeffs[mol->almos[q*4 + 3]]);
 
-			for(uint16_t ix=0; ix<nsubdivs; ix++) {
+			float3 q_xyz = {
+				mol->xyz[almos[q*4]*3 + 0],
+				mol->xyz[almos[q*4]*3 + 1],
+				mol->xyz[almos[q*4]*3 + 2],
+			};
 
-				vp.x = v.x - 0.5*dx + (ix+0.5)*ddx;
+			float factor = 0;
+			for(uint16_t i_subdiv = 0; i_subdiv < nsubdivs_total; i_subdiv++) {
 
-				for(uint16_t iy=0; iy<nsubdivs; iy++) {
+				float3 vp = subgrid_points[i_subdiv];
+				float3 rp = {
+					vp.x - p_xyz.x,
+					vp.y - p_xyz.y,
+					vp.z - p_xyz.z,
+				};
+				float3 rq = {
+					vp.x - q_xyz.x,
+					vp.y - q_xyz.y,
+					vp.z - q_xyz.z,
+				};
+				float dp = rp.x*rp.x + rp.y*rp.y + rp.z*rp.z;
+				float dq = rq.x*rq.x + rq.y*rq.y + rq.z*rq.z;
 
-					vp.y = v.y - 0.5*dx + (iy+0.5)*ddx;
+				// dm[p,q] * sump (coeff[i] exp[-alpha[i] r**2] Ylm) * sumq (coeff[i] exp[-alpha[i] r**2] Ylm)
+				float factor_subdiv = 
+					  SolidHarmonicR(almos[p*4+1], almos[p*4+2], rp)
+					* SolidHarmonicR(almos[q*4+1], almos[q*4+2], rq);
 
-					for(uint16_t iz=0; iz<nsubdivs; iz++) {
-
-						vp.z = v.z - 0.5*dx + (iz+0.5)*ddx;
-
-						// dm[p,q] * sump (coeff[i] exp[-alpha[i] r**2] Ylm) * sumq (coeff[i] exp[-alpha[i] r**2] Ylm)
-
-						float partial = mol->dm[p*norb + q];
-
-						float3 r; // = scoords[shALMOs[p].x];
-						r.x = vp.x - mol->xyz[almos[p*4]*3 + 0];
-						r.y = vp.y - mol->xyz[almos[p*4]*3 + 1];
-						r.z = vp.z - mol->xyz[almos[p*4]*3 + 2];
-						
-						partial *= SolidHarmonicR(almos[p*4+1], almos[p*4+2], r);
-
-						// multiply by the contracted gaussians
-						float d = r.x*r.x + r.y*r.y + r.z*r.z;
-						float acc = 0;
-						for(uint16_t ai=0; ai<MAXAOC; ai++) {
-							//r.z = alphas[shALMOs[p].w+ai];
-							acc += cp[ai] * exp(-ap[ai] * d);
-						}
-						partial *= acc;
-
-						//r = scoords[shALMOs[q].x];
-						r.x = vp.x - mol->xyz[almos[q*4]*3 + 0];
-						r.y = vp.y - mol->xyz[almos[q*4]*3 + 1];
-						r.z = vp.z - mol->xyz[almos[q*4]*3 + 2];
-						partial *= SolidHarmonicR(almos[q*4+1], almos[q*4+2], r);
-
-						d = r.x*r.x + r.y*r.y + r.z*r.z;
-						acc = 0;
-						for(uint16_t ai=0; ai<MAXAOC; ai++) {
-							//r.z = alphas[shALMOs[q].w+ai];
-							acc += cq[ai] * exp(-aq[ai] * d);
-						}
-						partial *= acc;
-
-						if(p != q) partial*=2;
-
-						//printf("%i %i %f, %f\n",p,q,mol->dm[p*norb + q],partial);
-						//charge += partial * SUBGRIDiV;
-						charge += partial * SUBGRIDV;
-					}
+				// multiply by the contracted gaussians
+				float accp = 0;
+				float accq = 0;
+				for(uint16_t ai=0; ai<MAXAOC; ai++) {
+					accp += cp[ai] * exp(-ap[ai] * dp);
+					accq += cq[ai] * exp(-aq[ai] * dq);
 				}
-			}// end of subgrid loop
+				factor_subdiv *= accp * accq;
+
+				factor += factor_subdiv;
+
+			}
+
+			if(p != q) factor *= 2;
+			charge += factor * mol->dm[p*norb + q];
+
 		}
 	}
 
 	// this accounts for closed shell (2 electrons per orbital)
 	// and multiplied by the voxel volume (integral of the wfn)
-	charge = 2*charge; //*dx*dx*dx;
+	charge = 2*charge * SUBGRIDV; //*dx*dx*dx;
 	return charge;
 }
 
