@@ -8,7 +8,6 @@ from pycuda.compiler import SourceModule
 from pycuda import gpuarray
 import os
 from enum import IntEnum, unique
-import requests
 
 #import skcuda.fft as cufft
 
@@ -209,7 +208,7 @@ class Grid:
 			raise ValueError("shape for xyz have to be multiple of 8")
 		self.GPUblocks = tuple([x.item() for x in blk])
 
-		self.qube = numpy.zeros(self.shape).astype(numpy.float32)
+		self.qube = numpy.zeros(self.shape, order='F').astype(numpy.float32)
 		self.d_qube = cuda.mem_alloc(self.qube.nbytes); cuda.memcpy_htod(self.d_qube, self.qube)
 
 		self.npts = numpy.uint32(self.shape[1]*self.shape[2]*self.shape[3])
@@ -1860,6 +1859,7 @@ class AutomatonNNSimple:
 		kernel = kernel.replace('PYCUDA_NY', str(cgrid.shape[2]))
 		kernel = kernel.replace('PYCUDA_NZ', str(cgrid.shape[3]))
 		kernel = kernel.replace('PYCUDA_NPTS', str(cgrid.npts))
+		kernel = kernel.replace('PYCUDA_GRIDSTEP', str(cgrid.step))
 		
 		if debug: # print the kernel for debug
 			fout = open("atm.gans.kernel.txt","w")
@@ -2362,8 +2362,8 @@ class QMTools:
 	fker = open('kernel_automaton.cu')
 	srcAutomaton = fker.read(); fker.close()
 
-	#fker = open('kernel_automaton_nn.cu')
-	#srcAutomatonNN = fker.read(); fker.close()
+	fker = open('kernel_automaton_nn.cu')
+	srcAutomatonNN = fker.read(); fker.close()
 
 	h_qtot = numpy.zeros(1).astype(numpy.float32)
 	d_qtot = cuda.mem_alloc(4) # one float
