@@ -1,18 +1,14 @@
+
 import numpy
-import sys
-import requests
-import pickle
-import glob
 
-from cidhelper import CIDHelper
-from qmtools import BasisSet, Molecule, Grid, QMTools
-
+from qmtools import BasisSet, Grid, Molecule, QMTools
+from qmtools.cidhelper import CIDHelper
 
 DATADIR = "data"
 
 
 # load the basis set
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 
 
 # get a random molecule

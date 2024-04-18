@@ -17,7 +17,7 @@ DATADIR = "data"
 
 
 # load the basis set
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 
 
 	

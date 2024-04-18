@@ -1,13 +1,11 @@
-from qmtools import BasisSet, Molecule, Grid, Automaton, QMTools
 import numpy
-import pycuda.driver as cuda
 
+from qmtools import Automaton, BasisSet, Grid, Molecule, QMTools
 
-
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 qm = QMTools()
 
-folder = "../qmtools/molecule_29766_0/"
+folder = "../data/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
 gridTemplate = Grid.DensityGrid(mol, 0.1, 3.0)

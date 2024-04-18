@@ -1,14 +1,12 @@
-from qmtools import BasisSet, Molecule, Grid, Automaton, QMTools
 import numpy
 import pycuda.driver as cuda
-from pycuda import gpuarray
 
-
+from qmtools import Grid, QMTools
 
 ### test the hartree potential of a ~point charge
 # TODO: convert this to work with a molecule instead
 
-#basisset = BasisSet("cc-pvdz.bin")
+#basisset = BasisSet("../data/cc-pvdz.bin")
 qm = QMTools()
 
 

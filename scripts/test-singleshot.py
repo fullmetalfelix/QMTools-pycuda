@@ -1,23 +1,18 @@
-import numpy
-import sys
-import requests
-import pickle
 import glob
+import pickle
+import sys
 
+import numpy
 
-from GAEngine import GA
-
-from automaton_nn_singleshot import AutomatonSingleShot
-
-from cidhelper import CIDHelper
-from qmtools import BasisSet, Molecule, Grid, QMTools
-
+from qmtools import BasisSet, Grid, Molecule
+from qmtools.automaton_nn_singleshot import AutomatonSingleShot
+from qmtools.GAEngine import GA
 
 DATADIR = "data"
 
 
 # load the basis set
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 
 
 

@@ -1,12 +1,11 @@
 import numpy
-import struct
 import os
 
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 
-from qmtools.qmtools import Molecule, Grid, QMTools
-from GAEngine import GAElement
+from qmtools.qmtools import CUDA_SRC_DIR, Grid, QMTools
+from qmtools.GAEngine import GAElement
 
 
 
@@ -20,7 +19,7 @@ class AutomatonSingleShot(GAElement):
 	"""
 
 	# reads the kernel code as text
-	fker = open('kernel_nn_ss.cu')
+	fker = open(CUDA_SRC_DIR / 'kernel_nn_ss.cu')
 	sourceCode = fker.read()
 	fker.close()
 
