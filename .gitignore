@@ -3,3 +3,9 @@ __pycache__
 *.png
 *.npy
 *.cube
+*.log
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/

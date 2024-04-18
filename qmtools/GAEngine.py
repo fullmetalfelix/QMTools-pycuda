@@ -1,8 +1,7 @@
-import numpy
-import sys
-import struct
 import builtins
+import struct
 
+import numpy
 
 
 class GAElement:

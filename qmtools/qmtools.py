@@ -1,14 +1,17 @@
-import numpy
-from ctypes import *
+
 import pickle
 import struct
-import pycuda.driver as cuda
-import pycuda.autoinit
-from pycuda.compiler import SourceModule
-from pycuda import gpuarray
-import os
+from ctypes import *
 from enum import IntEnum, unique
-import requests
+from pathlib import Path
+
+import numpy
+import pycuda.autoinit
+import pycuda.driver as cuda
+from pycuda import gpuarray
+from pycuda.compiler import SourceModule
+
+CUDA_SRC_DIR = Path(__file__).resolve().parent / 'cuda'
 
 #import skcuda.fft as cufft
 
@@ -807,7 +810,7 @@ class Automaton:
 			fout.close()
 
 		# compile
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()])#, options=["--resource-usage"])
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)])#, options=["--resource-usage"])
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -1115,7 +1118,7 @@ class AutomatonSimple:
 			fout.close()
 
 		# compile
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()])#, options=["--resource-usage"])
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)])#, options=["--resource-usage"])
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -1391,7 +1394,7 @@ class AutomatonSingleShot:
 		# compile
 		opts = []
 		if debug: opts = ["--resource-usage"]
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -1620,7 +1623,7 @@ class AutomatonNN:
 
 
 		# compile
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()]) #, options=["--resource-usage"])
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)]) #, options=["--resource-usage"])
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -1869,7 +1872,7 @@ class AutomatonNNSimple:
 		# compile
 		opts = []
 		if debug: opts = ["--resource-usage"]
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -1982,7 +1985,7 @@ class AutomatonNNSimple:
 		# compile
 		opts = []
 		if debug: opts = ["--resource-usage"]
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -2223,7 +2226,7 @@ class AutomatonNNSingleShot:
 		# compile
 		opts = []
 		if debug: opts = ["--resource-usage"]
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -2324,8 +2327,8 @@ class AutomatonNNSingleShot:
 class QMTools:
 
 
-	fker = open('kernel_utils.cu')
-	source = SourceModule(fker.read(), include_dirs=[os.getcwd()], options=["--resource-usage"])
+	fker = open(CUDA_SRC_DIR / 'kernel_utils.cu')
+	source = SourceModule(fker.read(), include_dirs=[str(CUDA_SRC_DIR)], options=["--resource-usage"])
 	fker.close()
 
 	kernelQseed = source.get_function("gpu_density_seed")
@@ -2348,21 +2351,21 @@ class QMTools:
 	kernelQDiffRel.prepare([ numpy.intp, numpy.intp, numpy.intp ])
 
 	# computes density grid from density matrix
-	fker = open('kernel_density.cu')
+	fker = open(CUDA_SRC_DIR / 'kernel_density.cu')
 	srcDensity = fker.read(); fker.close()
 
 	# computes hartree potential grid from density grid
-	fker = open('kernel_hartree.cu')
+	fker = open(CUDA_SRC_DIR / 'kernel_hartree.cu')
 	srcHartree = fker.read(); fker.close()
 
 	# add nuclear charge to charge grid
-	fker = open('kernel_fft.cu')
+	fker = open(CUDA_SRC_DIR / 'kernel_fft.cu')
 	srcFFT = fker.read(); fker.close()
 
-	fker = open('kernel_automaton.cu')
+	fker = open(CUDA_SRC_DIR / 'kernel_automaton.cu')
 	srcAutomaton = fker.read(); fker.close()
 
-	#fker = open('kernel_automaton_nn.cu')
+	#fker = open(CUDA_PATH / 'kernel_automaton_nn.cu')
 	#srcAutomatonNN = fker.read(); fker.close()
 
 	h_qtot = numpy.zeros(1).astype(numpy.float32)
@@ -2390,7 +2393,7 @@ class QMTools:
 		#print(kernel)
 		opts = []
 		if debug: opts.append("--resource-usage")
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		kernel = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 		kernel = kernel.get_function("gpu_densityqube_shmem_subgrid")
 		kernel.prepare([
 			numpy.float32, gpuarray.vec.float3,
@@ -2451,7 +2454,7 @@ class QMTools:
 
 		kernel = kernel.replace('#define NORB 0', '#define NORB {}'.format(molecule.norbs))
 
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		kernel = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=["--resource-usage"])
 		src = kernel
 
 
@@ -2511,7 +2514,7 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_GRID_NZ', str(qgrid.shape[3]))
 
 
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		kernel = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=["--resource-usage"])
 		src = kernel
 
 
@@ -2591,7 +2594,7 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_SIGMA', str(sigma)+"f")
 		kernel = kernel.replace('PYCUDA_CUTOFF_SQ', str((cutoff*sigma)**2)+"f")
 
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()], options=["--resource-usage"])
+		kernel = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=["--resource-usage"])
 
 		kernel_nuclear = kernel.get_function("gpu_add_nuclear_charge")
 		kernel_nuclear.prepare([numpy.intp, numpy.intp, numpy.intp, numpy.intp])
@@ -2676,7 +2679,7 @@ class QMTools:
 		print("computing VNe on new grid...")
 
 		# setup the kernel
-		fker = open('kernel_vne.cu')
+		fker = open(CUDA_SRC_DIR / 'kernel_vne.cu')
 		kernel = fker.read(); fker.close()
 		kernel = kernel.replace('PYCUDA_NATOMS',str(molecule.natoms))
 		kernel = kernel.replace('PYCUDA_NX',str(grid.shape[1]))
@@ -2685,7 +2688,7 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_ADS',str(adsorb))
 		kernel = kernel.replace('PYCUDA_DIF',str(diff))
 		
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()])
+		kernel = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)])
 		kernel = kernel.get_function("gpu_vne")
 		kernel.prepare([
 			numpy.intp,numpy.intp,
@@ -2749,7 +2752,7 @@ class QMTools:
 		print("computing VNe(classic) on new grid...")
 
 		# setup the kernel
-		fker = open('kernel_vne_classic.cu')
+		fker = open(CUDA_SRC_DIR / 'kernel_vne_classic.cu')
 		kernel = fker.read(); fker.close()
 		kernel = kernel.replace('PYCUDA_NATOMS',str(molecule.natoms))
 		kernel = kernel.replace('PYCUDA_NX',str(grid.shape[1]))
@@ -2766,7 +2769,7 @@ class QMTools:
 		kernel = kernel.replace('PYCUDA_dx',str(grid.step/divisions))
 
 
-		kernel = SourceModule(kernel, include_dirs=[os.getcwd()])
+		kernel = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)])
 		kernel = kernel.get_function("gpu_vne_classic")
 		kernel.prepare([
 			numpy.intp,numpy.intp,
