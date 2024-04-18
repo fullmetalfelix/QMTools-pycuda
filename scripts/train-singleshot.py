@@ -5,11 +5,11 @@ import pickle
 import glob
 
 
-from GAEngine import GA
+from qmtools.GAEngine import GA
 
-from automaton_nn_singleshot import AutomatonSingleShot
+from qmtools.automaton_nn_singleshot import AutomatonSingleShot
 
-from cidhelper import CIDHelper
+from qmtools.cidhelper import CIDHelper
 from qmtools import BasisSet, Molecule, Grid, QMTools
 
 
@@ -46,6 +46,7 @@ def MakeBatch(size=4, save=False):
 		# compute the density from dmatrix
 		print("computing density grid...")
 		gridTemplate = Grid.DensityGrid(mol, 0.1, 3.0)
+		print(gridTemplate.qube.shape)
 		qgrid = QMTools.Compute_density(gridTemplate, mol, subgrid=2, copyBack=True)
 		
 		print("computing VNe")

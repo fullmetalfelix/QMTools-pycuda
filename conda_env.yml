@@ -1,0 +1,10 @@
+name: qmtools
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy
+  - pycuda
+  - cuda
+  - requests

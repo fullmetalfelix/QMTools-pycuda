@@ -5,7 +5,7 @@ import os
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 
-from qmtools import Molecule, Grid, QMTools
+from qmtools.qmtools import Molecule, Grid, QMTools
 from GAEngine import GAElement
 
 
