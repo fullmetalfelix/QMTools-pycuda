@@ -4,6 +4,8 @@ __pycache__
 *.npy
 *.cube
 *.log
+*.so
+*.pickle
 
 # Distribution / packaging
 build/
