@@ -1,15 +1,15 @@
-from qmtools import BasisSet, Molecule, Grid, Automaton, QMTools
+
 import numpy
-import pycuda.driver as cuda
-import struct
+
+from qmtools import BasisSet, Grid, Molecule, QMTools
 
 ### test the hartree potential of a molecule
 
 # load the basis set
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 
 # load a molecule
-folder = "../qmtools/molecule_29766_0/"
+folder = ".../data/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
 stp = 0.1

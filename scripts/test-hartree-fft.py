@@ -1,14 +1,16 @@
 
-from qmtools import BasisSet, Molecule, Grid, QMTools
-import numpy
 import time
+
 import matplotlib.pyplot as plt
+import numpy
+
+from qmtools import BasisSet, Grid, Molecule, QMTools
 
 # load the basis set
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 
 # load a molecule
-folder = "./molecule_29766_0/"
+folder = "../data/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
 step = 0.05

@@ -1,9 +1,10 @@
 name: qmtools
 channels:
-  - conda-forge
   - nvidia
+  - conda-forge
   - defaults
 dependencies:
+  - python=3.11
   - numpy
   - pycuda
   - cuda

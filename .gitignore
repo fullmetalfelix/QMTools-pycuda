@@ -4,3 +4,9 @@ __pycache__
 *.npy
 *.cube
 *.xsf
+*.log
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
