@@ -1,5 +1,8 @@
+import base64
+import io
+
 import numpy
-import requests, base64, io
+import requests
 
 requests.packages.urllib3.disable_warnings()
 

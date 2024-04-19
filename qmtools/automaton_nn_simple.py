@@ -1,7 +1,10 @@
+import struct
+
 import numpy
+import pycuda.driver as cuda
+from pycuda.compiler import SourceModule
 
-
-
+from qmtools import CUDA_SRC_DIR, Grid, QMTools
 
 # this must implement a few functions to work with the GAEngine
 # Random = return a new random automaton
@@ -155,7 +158,7 @@ class Automaton:
 		# compile
 		opts = []
 		if debug: opts = ["--resource-usage"]
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')
@@ -271,7 +274,7 @@ class Automaton:
 		# compile
 		opts = []
 		if debug: opts = ["--resource-usage"]
-		ptx = SourceModule(kernel, include_dirs=[os.getcwd()], options=opts)
+		ptx = SourceModule(kernel, include_dirs=[str(CUDA_SRC_DIR)], options=opts)
 
 		# get the constant memory pointer
 		cp, sb = ptx.get_global('cParams')

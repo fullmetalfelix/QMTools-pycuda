@@ -1,20 +1,18 @@
-from qmtools import BasisSet, Molecule, Grid, Automaton, QMTools
 import numpy
-import pycuda.driver as cuda
 
+from qmtools import AutomatonNN, BasisSet, Grid, Molecule, QMTools
 
-
-basisset = BasisSet("cc-pvdz.bin")
+basisset = BasisSet("../data/cc-pvdz.bin")
 qm = QMTools()
 
-folder = "../qmtools/molecule_29766_0/"
+folder = "../data/molecule_29766_0/"
 mol = Molecule(folder+"GEOM-B3LYP.xyz", folder+"D-CCSD.npy", basisset)
 
 gridTemplate = Grid.DensityGrid(mol, 0.1, 3.0)
 
 # generate the electron grid from the DM and basis set
-#qref = QMTools.Compute_density(gridTemplate, mol, subgrid=4, copyBack=True)
-#numpy.save('pycuda_qref.npy', qref.qube)
+qref = QMTools.Compute_density(gridTemplate, mol, copyBack=True)
+numpy.save('pycuda_qref.npy', qref.qube)
 
 #'''
 qref = Grid.emptyAs(gridTemplate)
@@ -30,13 +28,15 @@ numpy.save('pycuda_qseed.npy', gvne.qube)
 cgrid = Grid.emptyAs(gridTemplate, nfields=4)
 
 # create an automaton and initialize the compute grid
-atm = Automaton()
-atm.Randomize(5.0, 4)
+atm = AutomatonNN()
+atm.Randomize(5.0, 4, 2)
+#print(numpy.max(cgrid.qube[0]), numpy.max(cgrid.qube[1]), numpy.max(cgrid.qube[2]), numpy.max(cgrid.qube[3]))
+#print(numpy.sum(cgrid.qube[0]), numpy.sum(cgrid.qube[1]), numpy.sum(cgrid.qube[2]), numpy.sum(cgrid.qube[3]))
 
 binary = atm.Binarize()
 #print(binary)
 
-atm.Randomize(0.0,4)
+atm.Randomize(0.0,4,2)
 atm.LoadBinary(binary)
 
 binary2 = atm.Binarize()
