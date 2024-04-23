@@ -1,5 +1,4 @@
 import torch
-import torch.functional as F
 from torch import nn
 
 DIFF_Q = 0.8
@@ -25,7 +24,7 @@ def make_pairs(q):
 
     # Construct all neighbour pairs
     # fmt: off
-    q = torch.stack( 
+    q = torch.stack(
         [
             torch.cat([q, q_padded[:, 2:  , 1:-1, 1:-1]], dim=-1),  # +1 in x
             torch.cat([q, q_padded[:,  :-2, 1:-1, 1:-1]], dim=-1),  # -1 in x
@@ -92,17 +91,19 @@ class AutomatonPT(nn.Module):
         init_pad = self.extra_constants.repeat((n_batch, nx, ny, nz, 26, 1))
         x1 = torch.cat([q_pairs, init_pad], dim=5)  # x1.shape = (n_batch, nx, ny, nz, 26, 16)
         x2 = torch.cat([q_pairs[..., 2:], q_pairs[..., :2], init_pad], dim=5)  # x2.shape = (n_batch, nx, ny, nz, 26, 16)
+        del init_pad
         transfer = nn.functional.tanh(self.net(x1) - self.net(x2))  # transfer.shape = (n_batch, nx, ny, nz, 26, 1)
         transfer = transfer.squeeze(5)  # transfer.shape = (n_batch, nx, ny, nz, 26)
 
         # Get the direction of the transfer right
         mask_neg_transfer = transfer < 0
         mask_pos_transfer = ~mask_neg_transfer
+        transfer = transfer.clone()
         transfer[mask_neg_transfer] *= q_pairs[mask_neg_transfer][:, 0]
         transfer[mask_pos_transfer] *= q_pairs[mask_pos_transfer][:, 2]
 
         # Scale by neighbour distances
-        transfer *= self.inverse_pair_distances[None, None, None, None, :]
+        transfer = transfer * self.inverse_pair_distances[None, None, None, None, :]
 
         # Sum over neighbours to get total transfer for each voxel
         transfer = transfer.sum(dim=(4)) * (ONE_OVER_DIFF_TOT * DIFF_Q)  # transfer.shape = (n_batch, nx, ny, nz)
