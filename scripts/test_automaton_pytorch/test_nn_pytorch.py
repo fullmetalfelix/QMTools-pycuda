@@ -1,13 +1,18 @@
 
+import time
 import torch
 from qmtools.automaton_pytorch import AutomatonPT
 
 if __name__ == "__main__":
 
-    model = AutomatonPT(n_layer=4)
+    n_batch = 1
+    nx, ny, nz = (50, 50, 50)
+    device = 'cuda'
 
-    n_batch = 2
-    n_voxel = 100
-    x = torch.rand(n_batch, n_voxel, 26, 4)
+    model = AutomatonPT(n_layer=4, device=device)
+    x = torch.rand(n_batch, nx, ny, nz, 2).to(device)
+
+    t0 = time.perf_counter()
     t = model(x)
+    print(time.perf_counter() - t0)
     print(t.shape)
