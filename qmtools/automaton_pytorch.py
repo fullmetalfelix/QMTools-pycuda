@@ -5,10 +5,10 @@ DIFF_Q = 0.8
 ONE_OVER_DIFF_TOT = 0.05234482976098482
 
 
-def _make_inverse_pair_distance_vector(grid_step):
-    d_nearest = grid_step
-    d_edge = 2**0.5 * grid_step
-    d_corner = 3**0.5 * grid_step
+def _make_inverse_pair_distance_vector():
+    d_nearest = 1
+    d_edge = 2**0.5
+    d_corner = 3**0.5
     d = torch.tensor([d_nearest] * 6 + [d_edge] * 12 + [d_corner] * 8)
     d_inv = 1 / d
     return d_inv
@@ -61,11 +61,11 @@ def make_pairs(q):
 
 class AutomatonPT(nn.Module):
 
-    def __init__(self, n_layer=4, grid_step=0.1, device="cpu"):
+    def __init__(self, n_layer=4, device="cpu"):
 
         super().__init__()
         self.n_layer = n_layer
-        self.inverse_pair_distances = _make_inverse_pair_distance_vector(grid_step).to(device)
+        self.inverse_pair_distances = _make_inverse_pair_distance_vector().to(device)
         self.device = device
 
         layers = []
