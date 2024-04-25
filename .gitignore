@@ -3,6 +3,7 @@ __pycache__
 *.png
 *.npy
 *.cube
+*.xsf
 *.log
 
 # Distribution / packaging
