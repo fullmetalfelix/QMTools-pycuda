@@ -51,9 +51,9 @@ def get_batch(grid_step=0.1):
 if __name__ == "__main__":
 
     device = "cuda"
-    grid_step = 0.15
-    n_batch = 5
-    n_iter = 100
+    grid_step = 0.10
+    n_batch = 20
+    n_iter = 1000
     loss_log_path = Path("loss_log.csv")
     checkpoint_dir = Path("checkpoints")
     densities_dir = Path("densities")
@@ -77,6 +77,7 @@ if __name__ == "__main__":
     for i_batch in range(n_batch):
 
         print(i_batch)
+        f_loss_log = open(loss_log_path, "a")
 
         # Copy the initial state so that we start from the same place every time
         state = state_init.clone()
@@ -87,6 +88,7 @@ if __name__ == "__main__":
             state = model(state)
             q_pred = state[..., 0]
             loss = criterion(q_pred, q_ref)
+            print(iter, loss)
 
             # Backward
             optimizer.zero_grad()
@@ -97,8 +99,9 @@ if __name__ == "__main__":
             state = state.detach()
 
             # Save loss to file
-            with open(loss_log_path, "a") as f:
-                f.write(f"{i_batch},{iter},{loss.item()}\n")
+            f_loss_log.write(f"{i_batch},{iter},{loss.item()}\n")
+
+        f_loss_log.close()
 
         # Save current model weights
         torch.save(model.state_dict(), checkpoint_dir / f"weights_{i_batch}.pth")
