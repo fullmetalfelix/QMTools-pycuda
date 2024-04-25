@@ -5,6 +5,8 @@ __pycache__
 *.cube
 *.xsf
 *.log
+*.pth
+*.csv
 
 # Distribution / packaging
 build/
