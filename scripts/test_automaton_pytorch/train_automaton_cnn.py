@@ -9,7 +9,7 @@ from torch import nn
 from torch.optim import Adam
 
 from qmtools import ANG2BOR, BasisSet, Grid, Molecule, QMTools
-from qmtools.automaton_pytorch import AutomatonPT
+from qmtools.automaton_pytorch import DensityCNN
 
 
 def save_to_xsf(file_path, arr, mol, grid_step, origin):
@@ -41,6 +41,7 @@ def get_batch(grid_step=0.1):
     state = np.zeros(gvne_grid.shape[1:] + (2,), order="F", dtype=np.float32)
     cuda.memcpy_dtoh(state[..., 0], gvne_grid.d_qube)
     cuda.memcpy_dtoh(state[..., 1], gqsd_grid.d_qube)
+    state = state.transpose((3, 0, 1, 2))
 
     q_ref = torch.tensor(q_ref).unsqueeze(0)
     state = torch.tensor(state).unsqueeze(0)
@@ -52,11 +53,10 @@ if __name__ == "__main__":
 
     device = "cuda"
     grid_step = 0.10
-    n_batch = 20
-    n_iter = 200
-    loss_log_path = Path("loss_log.csv")
-    checkpoint_dir = Path("checkpoints")
-    densities_dir = Path("densities")
+    n_batch = 10000
+    loss_log_path = Path("loss_log_cnn.csv")
+    checkpoint_dir = Path("checkpoints_cnn")
+    densities_dir = Path("densities_cnn")
 
     checkpoint_dir.mkdir(exist_ok=True)
     densities_dir.mkdir(exist_ok=True)
@@ -67,61 +67,40 @@ if __name__ == "__main__":
     q_ref, state, mol, origin = get_batch(grid_step)
     save_to_xsf(densities_dir / f"density_ref.xsf", q_ref[0], mol, grid_step, origin)
     q_ref = q_ref.to(device)
-    state_init = state.to(device)
+    state = state.to(device)
 
-    model = AutomatonPT(n_layer=4, device=device)
+    model = DensityCNN(device=device)
     optimizer = Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
     # Train
     for i_batch in range(n_batch):
 
-        print(i_batch)
-        f_loss_log = open(loss_log_path, "a")
-
-        # Copy the initial state so that we start from the same place every time
-        state = state_init.clone()
-
-        for iter in range(n_iter):
-
-            # Forward
-            state = model(state)
-            q_pred = state[..., 0]
-            loss = criterion(q_pred, q_ref)
-            print(iter, loss)
-
-            # Backward
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            # Need to detach so that on the following iteration the computational graph does not extend back to this iteration
-            state = state.detach()
-
-            # Save loss to file
-            f_loss_log.write(f"{i_batch},{iter},{loss.item()}\n")
-
-        f_loss_log.close()
-
-        # Save current model weights
-        torch.save(model.state_dict(), checkpoint_dir / f"weights_{i_batch}.pth")
-
-        # Save final density
-        q_pred = q_pred[0].detach().cpu().numpy()
-        diff = q_pred - q_ref[0].cpu().numpy()
-        save_to_xsf(densities_dir / f"density_{i_batch}.xsf", q_pred, mol, grid_step, origin)
-        save_to_xsf(densities_dir / f"diff_{i_batch}.xsf", diff, mol, grid_step, origin)
-
-    # Do a test run where the weights are fixed
-    state = state_init.clone()
-    for iter in range(n_iter):
-
         # Forward
-        with torch.no_grad():
-            state = model(state)
-            q_pred = state[..., 0]
-            loss = criterion(q_pred, q_ref)
+        q_pred = model(state)
+        loss = criterion(q_pred, q_ref)
+        print(i_batch, loss)
+
+        # Backward
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
         # Save loss to file
         with open(loss_log_path, "a") as f:
-            f.write(f"{n_batch+1},{iter},{loss.item()}\n")
+            f.write(f"{i_batch},{loss.item()}\n")
+
+        # Save density and model every once in a while
+        if i_batch % 100 == 0:
+            q_pred = q_pred[0].detach().cpu().numpy()
+            save_to_xsf(densities_dir / f"density_{i_batch}.xsf", q_pred, mol, grid_step, origin)
+            torch.save(model.state_dict(), checkpoint_dir / f"weights_{i_batch}.pth")
+
+    # Do a test run
+    with torch.no_grad():
+        q_pred = model(state)
+        loss = criterion(q_pred, q_ref)
+        q_pred = q_pred[0].detach().cpu().numpy()
+    save_to_xsf(densities_dir / f"density_test.xsf", q_pred, mol, grid_step, origin)
+    with open(loss_log_path, "a") as f:
+        f.write(f"{n_batch},{loss.item()}\n")

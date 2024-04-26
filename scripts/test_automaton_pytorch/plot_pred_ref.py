@@ -7,12 +7,12 @@ import numpy as np
 
 if __name__ == "__main__":
 
-    i_batch = 8
-    densities_dir = Path("densities")
+    # densities_dir = Path("densities")
+    densities_dir = Path("densities_cnn")
 
     with open(densities_dir / "density_ref.xsf", "r") as f:
         q_ref, _ = read_xsf(f, read_data=True)
-    with open(densities_dir / f"density_{i_batch}.xsf", "r") as f:
+    with open(densities_dir / f"density_test.xsf", "r") as f:
         q_pred, _ = read_xsf(f, read_data=True)
 
     q_ref = q_ref.flatten()
