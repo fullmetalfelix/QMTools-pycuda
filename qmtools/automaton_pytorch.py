@@ -68,30 +68,29 @@ class AutomatonPT(nn.Module):
         self.inverse_pair_distances = _make_inverse_pair_distance_vector().to(device)
         self.device = device
 
-        layers = []
-        for _ in range(self.n_layer):
+        layers = [
+            nn.Linear(4, 16, bias=True),
+            nn.Tanh(),
+        ]
+        for _ in range(self.n_layer - 1):
             layers.append(nn.Linear(16, 16, bias=True))
             layers.append(nn.Tanh())
         layers.append(nn.Linear(16, 1, bias=True))
 
         self.net = nn.Sequential(*layers)
-        self.extra_constants = nn.Parameter(torch.rand(12))
 
         self.to(device)
 
     def forward(self, q):
 
         # q.shape = (n_batch, nx, ny, nz, 2)
-        n_batch, nx, ny, nz, _ = q.shape
 
         # Construct tensor with all neighbour pairs
         q_pairs = make_pairs(q)  # q_pairs.shape = (n_batch, nx, ny, nz, 26, 4)
 
         # Compute charge transfer for each neighbour pair, symmetrized
-        init_pad = self.extra_constants.repeat((n_batch, nx, ny, nz, 26, 1))
-        x1 = torch.cat([q_pairs, init_pad], dim=5)  # x1.shape = (n_batch, nx, ny, nz, 26, 16)
-        x2 = torch.cat([q_pairs[..., 2:], q_pairs[..., :2], init_pad], dim=5)  # x2.shape = (n_batch, nx, ny, nz, 26, 16)
-        del init_pad
+        x1 = q_pairs
+        x2 = torch.cat([q_pairs[..., 2:], q_pairs[..., :2]], dim=5)
         transfer = nn.functional.tanh(self.net(x1) - self.net(x2))  # transfer.shape = (n_batch, nx, ny, nz, 26, 1)
         transfer = transfer.squeeze(5)  # transfer.shape = (n_batch, nx, ny, nz, 26)
 
