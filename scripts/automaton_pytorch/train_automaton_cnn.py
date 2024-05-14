@@ -9,7 +9,7 @@ from torch import nn
 from torch.optim import Adam
 
 from qmtools import ANG2BOR, BasisSet, Grid, Molecule, QMTools
-from qmtools.automaton_pytorch import DensityCNN
+from qmtools.pt.automaton import DensityCNN
 
 
 def save_to_xsf(file_path, arr, mol, grid_step, origin):

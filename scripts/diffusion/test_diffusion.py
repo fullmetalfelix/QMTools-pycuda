@@ -2,7 +2,7 @@ import time
 
 import torch
 
-from qmtools.diffusion import DensityDiffusion, DensityDiffusionVAE, DensitySRDecoder, MolPotentialEncoder, MPNNEncoder
+from qmtools.pt.diffusion import DensityDiffusion, DensityDiffusionVAE, DensitySRDecoder, MolPotentialEncoder, MPNNEncoder
 
 if __name__ == "__main__":
 

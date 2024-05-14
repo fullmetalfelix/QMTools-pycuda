@@ -10,7 +10,7 @@ from ase.io.xsf import write_xsf
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 
-from qmtools.diffusion import MPNNEncoder, DensitySRDecoder
+from qmtools.pt.diffusion import MPNNEncoder, DensitySRDecoder
 
 CLASSES = [1, 6, 7, 8, 9, 14, 15, 16, 17, 35]
 

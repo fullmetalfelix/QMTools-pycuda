@@ -3,7 +3,7 @@ import time
 import torch
 from torch.optim import Adam
 from torch import nn
-from qmtools.automaton_pytorch import DensityCNN
+from qmtools.pt.automaton import DensityCNN
 
 if __name__ == "__main__":
 

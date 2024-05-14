@@ -9,7 +9,7 @@ from ase.io.xsf import write_xsf
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 
-from qmtools.diffusion import DensityDiffusionVAE, VAELoss
+from qmtools.pt.diffusion import DensityDiffusionVAE, VAELoss
 
 
 def save_to_xsf(file_path: Path, sample: dict[str, np.ndarray]):

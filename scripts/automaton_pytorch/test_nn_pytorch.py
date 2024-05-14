@@ -3,7 +3,7 @@ import time
 import torch
 from torch.optim import Adam
 from torch import nn
-from qmtools.automaton_pytorch import AutomatonPT
+from qmtools.pt.automaton import AutomatonPT
 
 if __name__ == "__main__":
 

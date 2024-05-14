@@ -9,7 +9,7 @@ from torch import nn
 from torch.optim import Adam
 
 from qmtools import ANG2BOR, AutomatonNNSimple, BasisSet, Grid, Molecule, QMTools
-from qmtools.automaton_pytorch import AutomatonPT
+from qmtools.pt.automaton import AutomatonPT
 from qmtools.qmtools import CUDA_SRC_DIR
 
 
