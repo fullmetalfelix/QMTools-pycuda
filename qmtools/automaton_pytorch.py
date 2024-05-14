@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import torch
 from torch import nn
 
@@ -59,6 +61,70 @@ def make_pairs(q):
     return q  # q.shape = (n_batch, nx, ny, nz, 26, 4)
 
 
+def _get_padding(kernel_size: int | Tuple[int, ...], nd: int) -> Tuple[int, ...]:
+    if isinstance(kernel_size, int):
+        kernel_size = (kernel_size,) * nd
+    padding = []
+    for i in range(nd):
+        padding += [(kernel_size[i] - 1) // 2]
+    return tuple(padding)
+
+
+class Conv3dBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | Tuple[int, ...] = 3,
+        depth: int = 2,
+        padding_mode: str = "zeros",
+        res_connection: bool = True,
+        activation: bool = None,
+        last_activation: bool = True,
+    ):
+        assert depth >= 1
+
+        super().__init__()
+
+        self.res_connection = res_connection
+        if not activation:
+            self.act = nn.ReLU()
+        else:
+            self.act = activation
+
+        if last_activation:
+            self.acts = [self.act] * depth
+        else:
+            self.acts = [self.act] * (depth - 1) + [self._identity]
+
+        padding = _get_padding(kernel_size, 3)
+        self.convs = nn.ModuleList(
+            [nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, padding_mode=padding_mode)]
+        )
+        for _ in range(depth - 1):
+            self.convs.append(
+                nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size, padding=padding, padding_mode=padding_mode)
+            )
+        if res_connection and in_channels != out_channels:
+            self.res_conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+        else:
+            self.res_conv = None
+
+    def _identity(self, x):
+        return x
+
+    def forward(self, x_in: torch.Tensor) -> torch.Tensor:
+        x = x_in
+        for conv, act in zip(self.convs, self.acts):
+            x = act(conv(x))
+        if self.res_connection:
+            if self.res_conv:
+                x = x + self.res_conv(x_in)
+            else:
+                x = x + x_in
+        return x
+
+
 class AutomatonPT(nn.Module):
 
     def __init__(self, n_layer=4, device="cpu"):
@@ -112,3 +178,47 @@ class AutomatonPT(nn.Module):
         q_updated[..., 0] += transfer
 
         return q_updated
+
+
+class DensityCNN(nn.Module):
+
+    def __init__(self, device="cpu"):
+        super().__init__()
+
+        self.act = nn.ReLU()
+        self.pool = nn.AvgPool3d(kernel_size=2, stride=2)
+        self.upsample = nn.Upsample(scale_factor=2, mode="trilinear")
+
+        self.conv_enc1 = Conv3dBlock(2, 8, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_enc2 = Conv3dBlock(8, 16, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_enc3 = Conv3dBlock(16, 32, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_middle = Conv3dBlock(32, 32, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_dec1 = Conv3dBlock(64, 16, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_dec2 = Conv3dBlock(32, 8, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_dec3 = Conv3dBlock(16, 8, depth=2, padding_mode="circular", activation=self.act)
+        self.conv_final = Conv3dBlock(8, 1, depth=2, padding_mode="circular", activation=self.act)
+
+        self.device = device
+        self.to(device)
+
+    def forward(self, q):
+
+        # q.shape = (n_batch, 2, nx, ny, nz)
+
+        q_conv_enc1 = self.conv_enc1(q)  # (n_batch, 8, nx, ny, nz)
+        q_conv_enc2 = self.conv_enc2(self.pool(q_conv_enc1))  # (n_batch, 16, nx / 2, ny / 2, nz / 2)
+        q_conv_enc3 = self.conv_enc3(self.pool(q_conv_enc2))  # (n_batch, 32, nx / 4, ny / 4, nz / 4)
+
+        q_conv_middle = self.conv_middle(self.pool(q_conv_enc3))  # (n_batch, 32, nx / 8, ny / 8, nz / 8)
+
+        q_comb1 = torch.cat([self.upsample(q_conv_middle), q_conv_enc3], dim=1)  # (n_batch, 64, nx / 4, ny / 4, nz / 4)
+        q_conv_dec1 = self.conv_dec1(q_comb1)  # (n_batch, 16, nx / 4, ny / 4, nz / 4)
+        q_comb2 = torch.cat([self.upsample(q_conv_dec1), q_conv_enc2], dim=1)  # (n_batch, 32, nx / 2, ny / 2, nz / 2)
+        q_conv_dec2 = self.conv_dec2(q_comb2)  # (n_batch, 8, nx / 2, ny / 2, nz / 2)
+        q_comb3 = torch.cat([self.upsample(q_conv_dec2), q_conv_enc1], dim=1)  # (n_batch, 16, nx / 2, ny / 2, nz / 2)
+        q_conv_dec3 = self.conv_dec3(q_comb3)  # (n_batch, 8, nx, ny, nz)
+
+        q_final = self.conv_final(q_conv_dec3)  # (n_batch, 1, nx, ny, nz)
+        q_final = q_final.squeeze(1)  # (n_batch, nx, ny, nz)
+
+        return q_final
