@@ -73,30 +73,35 @@ if __name__ == "__main__":
     optimizer = Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
-    # Train
-    for i_batch in range(n_batch):
+    try:
+        # Train
+        model.train()
+        for i_batch in range(n_batch):
 
-        # Forward
-        q_pred = model(state)
-        loss = criterion(q_pred, q_ref)
-        print(i_batch, loss)
+            # Forward
+            q_pred = model(state, relu_output=(i_batch > 500))
+            loss = criterion(q_pred, q_ref)
+            print(i_batch, loss)
 
-        # Backward
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            # Backward
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        # Save loss to file
-        with open(loss_log_path, "a") as f:
-            f.write(f"{i_batch},{loss.item()}\n")
+            # Save loss to file
+            with open(loss_log_path, "a") as f:
+                f.write(f"{i_batch},{loss.item()}\n")
 
-        # Save density and model every once in a while
-        if i_batch % 100 == 0:
-            q_pred = q_pred[0].detach().cpu().numpy()
-            save_to_xsf(densities_dir / f"density_{i_batch}.xsf", q_pred, mol, grid_step, origin)
-            torch.save(model.state_dict(), checkpoint_dir / f"weights_{i_batch}.pth")
+            # Save density and model every once in a while
+            if i_batch % 100 == 0:
+                q_pred = q_pred[0].detach().cpu().numpy()
+                save_to_xsf(densities_dir / f"density_{i_batch}.xsf", q_pred, mol, grid_step, origin)
+                torch.save(model.state_dict(), checkpoint_dir / f"weights_{i_batch}.pth")
+    except KeyboardInterrupt:
+        pass
 
     # Do a test run
+    model.eval()
     with torch.no_grad():
         q_pred = model(state)
         loss = criterion(q_pred, q_ref)

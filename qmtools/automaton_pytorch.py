@@ -201,7 +201,7 @@ class DensityCNN(nn.Module):
         self.device = device
         self.to(device)
 
-    def forward(self, q):
+    def forward(self, q, relu_output=True):
 
         # q.shape = (n_batch, 2, nx, ny, nz)
 
@@ -219,6 +219,8 @@ class DensityCNN(nn.Module):
         q_conv_dec3 = self.conv_dec3(q_comb3)  # (n_batch, 8, nx, ny, nz)
 
         q_final = self.conv_final(q_conv_dec3)  # (n_batch, 1, nx, ny, nz)
+        if relu_output:
+            q_final = nn.functional.relu(q_final)
         q_final = q_final.squeeze(1)  # (n_batch, nx, ny, nz)
 
         return q_final

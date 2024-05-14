@@ -53,7 +53,7 @@ if __name__ == "__main__":
     device = "cuda"
     grid_step = 0.10
     n_batch = 20
-    n_iter = 200
+    n_iter = 1000
     loss_log_path = Path("loss_log.csv")
     checkpoint_dir = Path("checkpoints")
     densities_dir = Path("densities")

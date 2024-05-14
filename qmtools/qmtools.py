@@ -240,7 +240,7 @@ class Grid:
 
 
 	### Creates a cartesian grid around a molecule.
-	def DensityGrid(molecule, step, fat):
+	def DensityGrid(molecule, step, fat, multiple=8):
 
 		# get the min and max of each coordinate with some fat
 		xyz = numpy.array(molecule.coords, copy=True)
@@ -251,13 +251,16 @@ class Grid:
 
 		grd = crdmax - crdmin
 		grd = grd / (step * ANG2BOR)
-		grd = grd / 8.0;
-		grd = numpy.ceil(grd).astype(numpy.uint32) * 8
-		
-		shape = (1, grd[0], grd[1], grd[2])
+		grd = grd / multiple
+		grd = numpy.ceil(grd).astype(numpy.uint32) * multiple
 
+		shape = (1, grd[0], grd[1], grd[2])
 		grid = Grid(shape, step)
-		grid.origin = gpuarray.vec.make_float3(crdmin[0],crdmin[1],crdmin[2])
+
+		extent = grd * step * ANG2BOR
+		origin = (crdmin + crdmax) / 2 - extent / 2
+		grid.origin = gpuarray.vec.make_float3(origin[0], origin[1], origin[2])
+
 		return grid
 
 
