@@ -2,7 +2,9 @@ import time
 
 import torch
 
-from qmtools.pt.diffusion import DensityDiffusion, DensityDiffusionVAE, DensitySRDecoder, MolPotentialEncoder, MPNNEncoder
+from qmtools.pt.diffusion import DensityDiffusion, DensityDiffusionVAE, MolPotentialEncoder
+from qmtools.pt.sr import DensitySRDecoder
+from qmtools.pt.gnn import MPNNEncoder
 
 if __name__ == "__main__":
 
@@ -33,22 +35,23 @@ if __name__ == "__main__":
     sr_decoder = DensitySRDecoder(device=device)
     mpnn_encoder = MPNNEncoder(device=device, n_class=7)
 
-    x = torch.rand(2, 32, 32, 32, device=device)
-    pos = torch.rand(16, 3, device=device)
-    classes = torch.rand(16, 7, device=device)
+    x = torch.rand(2, 16, 16, 16, device=device)
+    pos = torch.rand(15, 3, device=device)
+    classes = torch.rand(15, 7, device=device)
     edges = torch.tensor(
         [
             [0, 1, 4, 6, 2, 4, 5, 2],
-            [5, 15, 8, 2, 5, 3, 4, 12],
+            [5, 14, 8, 2, 5, 3, 4, 12],
         ],
         device=device,
     )
-    batch_nodes = [6, 10]
+    batch_nodes = [5, 10]
 
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
-    mol_embed = mpnn_encoder(pos, classes, edges, batch_nodes)
+    mol_embed = mpnn_encoder(pos, classes, edges)
+    mol_embed = mpnn_encoder.split_graph(mol_embed, batch_nodes)
     x = sr_decoder(x, mol_embed, batch_nodes)
 
     torch.cuda.synchronize()
