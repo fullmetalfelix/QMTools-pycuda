@@ -3,7 +3,7 @@ import time
 import torch
 
 from qmtools.pt.diffusion import DensityDiffusion, DensityDiffusionVAE, MolPotentialEncoder
-from qmtools.pt.sr import DensitySRDecoder
+from qmtools.pt.sr import AtomGrid, DensitySRDecoder
 from qmtools.pt.gnn import MPNNEncoder
 
 if __name__ == "__main__":
@@ -35,7 +35,8 @@ if __name__ == "__main__":
     sr_decoder = DensitySRDecoder(device=device)
     mpnn_encoder = MPNNEncoder(device=device, n_class=7)
 
-    x = torch.rand(2, 16, 16, 16, device=device)
+    n_batch = 2
+    x = torch.rand(n_batch, 16, 16, 16, device=device)
     pos = torch.rand(15, 3, device=device)
     classes = torch.rand(15, 7, device=device)
     edges = torch.tensor(
@@ -45,14 +46,17 @@ if __name__ == "__main__":
         ],
         device=device,
     )
+    origin = torch.zeros(n_batch, 3)
+    lattice = torch.stack([torch.eye(3, device=device) for _ in range(n_batch)], dim=0)
+    atom_grid = AtomGrid(pos, origin, lattice, device=device)
     batch_nodes = [5, 10]
 
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
     mol_embed = mpnn_encoder(pos, classes, edges)
-    mol_embed = mpnn_encoder.split_graph(mol_embed, batch_nodes)
-    x = sr_decoder(x, mol_embed, batch_nodes)
+    mol_embed, atom_grid = mpnn_encoder.split_graph(mol_embed, atom_grid, batch_nodes)
+    x = sr_decoder(x, mol_embed, atom_grid, batch_nodes)
 
     torch.cuda.synchronize()
     print(time.perf_counter() - t0)

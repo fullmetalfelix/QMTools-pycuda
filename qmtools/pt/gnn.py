@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from qmtools.pt.sr import AtomGrid
+
 CLASSES = [1, 6, 7, 8, 9, 14, 15, 16, 17, 35]
 
 # Reference: http://chemistry-reference.com/tables/Bond%20Lengths%20and%20Enthalpies.pdf
@@ -96,20 +98,27 @@ class MPNNEncoder(nn.Module):
 
         return node_features
 
-    def split_graph(self, node_features: torch.Tensor, batch_nodes: list[int]) -> torch.Tensor:
+    def split_graph(self, node_features: torch.Tensor, atom_grid: AtomGrid, batch_nodes: list[int]) -> torch.Tensor:
         # Split combined graph into separate graphs by padding smaller graphs to have the same
         # number of nodes as the biggest graph.
         # node_features.shape: (n_node_total, node_embed_size) -> (n_batch, n_node_biggest, node_embed_size)
+        # atom_grid.pos.shape: (n_node_total, 3) -> (n_batch, n_node_biggest, 3)
         node_features = torch.split(node_features, split_size_or_sections=batch_nodes)
+        pos = torch.split(atom_grid.pos, split_size_or_sections=batch_nodes)
         max_size = max(batch_nodes)
         node_features_padded = []
-        for f in node_features:
+        pos_padded = []
+        for f, p in zip(node_features, pos):
+            assert f.shape[0] == p.shape[0], "Inconsistent node count"
             pad_size = max_size - f.shape[0]
             if pad_size > 0:
                 f = torch.cat([f, torch.zeros(pad_size, f.shape[1], device=self.device)], dim=0)
+                p = torch.cat([p, torch.zeros(pad_size, p.shape[1], device=self.device)], dim=0)
             node_features_padded.append(f)
+            pos_padded.append(p)
         node_features = torch.stack(node_features_padded, axis=0)
-        return node_features
+        atom_grid.pos = torch.stack(pos_padded, axis=0)
+        return node_features, atom_grid
 
 
 def get_edges(xyzs: list[torch.Tensor], Zs: list[torch.Tensor], tolerance: int = 0.2):
@@ -153,7 +162,7 @@ def make_graph(xyzs: list[torch.Tensor], Zs: list[torch.Tensor]):
     return pos, edges, classes, batch_nodes
 
 
-def collate_graphs(samples: list[dict[str, np.ndarray | int]]):
+def collate_graphs(samples: list[dict[str, np.ndarray | int]]) -> dict[str, torch.Tensor | list[torch.Tensor]]:
 
     # Convert to tensors
     batch = {k: [] for k in samples[0].keys()}
