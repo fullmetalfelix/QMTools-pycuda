@@ -11,7 +11,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 
 from qmtools.pt.gnn import MPNNEncoder, collate_graphs, CLASSES
-from qmtools.pt.sr import DensitySRDecoder
+from qmtools.pt.sr import AtomGrid, DensitySRDecoder
 
 
 def save_to_xsf(file_path: Path, sample: dict[str, np.ndarray]):
@@ -97,15 +97,15 @@ if __name__ == "__main__":
 
                 q_input = batch["input"].to(device)
                 q_ref = batch["density"].to(device)
-                pos = batch["pos"].to(device)
                 classes = batch["classes"].to(device)
                 edges = batch["edges"].to(device)
+                atom_grid = AtomGrid(batch["pos"], batch["origin"], batch["lattice"], device=device)
                 batch_nodes = batch["batch_nodes"]
 
                 # Forward
-                mol_embed = mpnn_encoder(pos, classes, edges)
-                mol_embed = mpnn_encoder.split_graph(mol_embed, batch_nodes)
-                q_pred = sr_decoder(q_input, mol_embed, batch_nodes)
+                mol_embed = mpnn_encoder(atom_grid.pos, classes, edges)
+                mol_embed, atom_grid = mpnn_encoder.split_graph(mol_embed, atom_grid, batch_nodes)
+                q_pred = sr_decoder(q_input, mol_embed, atom_grid, batch_nodes)
                 loss = criterion(q_pred, q_ref)
 
                 # Backward
@@ -153,15 +153,17 @@ if __name__ == "__main__":
     sr_decoder.eval()
     batch = collate_graphs([dataset[0]])
     with torch.no_grad():
+
         q_input = batch["input"].to(device)
         q_ref = batch["density"].to(device)
-        pos = batch["pos"].to(device)
         classes = batch["classes"].to(device)
         edges = batch["edges"].to(device)
+        atom_grid = AtomGrid(batch["pos"], batch["origin"], batch["lattice"], device=device)
         batch_nodes = batch["batch_nodes"]
-        mol_embed = mpnn_encoder(pos, classes, edges)
-        mol_embed = mpnn_encoder.split_graph(mol_embed, batch_nodes)
-        q_pred = sr_decoder(q_input, mol_embed, batch_nodes)
+
+        mol_embed = mpnn_encoder(atom_grid.pos, classes, edges)
+        mol_embed, atom_grid = mpnn_encoder.split_graph(mol_embed, atom_grid, batch_nodes)
+        q_pred = sr_decoder(q_input, mol_embed, atom_grid, batch_nodes)
         loss = criterion(q_pred, q_ref)
 
     batch_pred = deepcopy(batch)
