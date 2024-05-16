@@ -36,7 +36,7 @@ if __name__ == "__main__":
     mpnn_encoder = MPNNEncoder(device=device, n_class=7)
 
     n_batch = 2
-    x = torch.rand(n_batch, 16, 16, 16, device=device)
+    x = torch.rand(n_batch, 32, 32, 32, device=device)
     pos = torch.rand(15, 3, device=device)
     classes = torch.rand(15, 7, device=device)
     edges = torch.tensor(
@@ -53,10 +53,12 @@ if __name__ == "__main__":
 
     torch.cuda.synchronize()
     t0 = time.perf_counter()
+    torch.cuda.memory._record_memory_history()
 
     mol_embed = mpnn_encoder(pos, classes, edges)
     mol_embed, atom_grid = mpnn_encoder.split_graph(mol_embed, atom_grid, batch_nodes)
     x = sr_decoder(x, mol_embed, atom_grid, batch_nodes)
 
     torch.cuda.synchronize()
+    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
     print(time.perf_counter() - t0)

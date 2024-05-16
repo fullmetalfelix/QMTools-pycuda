@@ -7,11 +7,11 @@ from matplotlib import pyplot as plt
 if __name__ == "__main__":
 
     # densities_dir = Path("densities")
-    densities_dir = Path("densities_vae")
+    densities_dir = Path("densities_sr")
 
-    with open(densities_dir / "density_ref.xsf", "r") as f:
+    with open(densities_dir / "density_test_ref.xsf", "r") as f:
         q_ref, _ = read_xsf(f, read_data=True)
-    with open(densities_dir / f"density_test.xsf", "r") as f:
+    with open(densities_dir / f"density_test_pred.xsf", "r") as f:
         q_pred, _ = read_xsf(f, read_data=True)
 
     q_ref = q_ref.flatten()

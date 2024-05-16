@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from ase import Atoms
 from ase.io.xsf import write_xsf
-from torch.optim import Adam
+from torch.optim import Adam, lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 
 from qmtools.pt.gnn import MPNNEncoder, collate_graphs, CLASSES
@@ -56,7 +56,7 @@ class DensityDataset(Dataset):
 if __name__ == "__main__":
 
     device = "cuda"
-    n_epoch = 1
+    n_epoch = 5
     batch_size = 8
     mol_embed_size = 32
     data_dir = Path("/scratch/work/oinonen1/density_db")
@@ -76,7 +76,8 @@ if __name__ == "__main__":
 
     mpnn_encoder = MPNNEncoder(n_class=len(CLASSES), node_embed_size=mol_embed_size, hidden_size=32, message_size=32, device=device)
     sr_decoder = DensitySRDecoder(mol_embed_size=mol_embed_size, device=device)
-    optimizer = Adam(list(mpnn_encoder.parameters()) + list(sr_decoder.parameters()), lr=1e-4)
+    optimizer = Adam(list(mpnn_encoder.parameters()) + list(sr_decoder.parameters()), lr=5e-4)
+    scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=1000, T_mult=2)
     criterion = nn.MSELoss(reduction="mean")
 
     print("Encoder total parameters:", sum(p.numel() for p in mpnn_encoder.parameters() if p.requires_grad))
@@ -112,6 +113,7 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
 
                 loss = loss.item()
                 losses.append(loss)
@@ -120,6 +122,8 @@ if __name__ == "__main__":
                     print(f"{i_batch}: {np.mean(losses)}")
 
                 if i_batch % 100 == 0:
+
+                    print("Current learning rate:", scheduler.get_last_lr())
 
                     # Save density
                     batch_pred = deepcopy(batch)
