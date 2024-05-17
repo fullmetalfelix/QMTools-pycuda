@@ -37,6 +37,7 @@ class MPNNEncoder(nn.Module):
 
         self.iters = iters
         self.message_size = message_size
+        self.node_embed_size = node_embed_size
 
         self.act = nn.ReLU()
         self.in_linear = nn.Linear(n_class, node_embed_size)
@@ -96,21 +97,6 @@ class MPNNEncoder(nn.Module):
 
         return node_features
 
-    def split_graph(self, node_features: torch.Tensor, batch_nodes: list[int]) -> torch.Tensor:
-        # Split combined graph into separate graphs by padding smaller graphs to have the same
-        # number of nodes as the biggest graph.
-        # node_features.shape: (n_node_total, node_embed_size) -> (n_batch, n_node_biggest, node_embed_size)
-        node_features = torch.split(node_features, split_size_or_sections=batch_nodes)
-        max_size = max(batch_nodes)
-        node_features_padded = []
-        for f in node_features:
-            pad_size = max_size - f.shape[0]
-            if pad_size > 0:
-                f = torch.cat([f, torch.zeros(pad_size, f.shape[1], device=self.device)], dim=0)
-            node_features_padded.append(f)
-        node_features = torch.stack(node_features_padded, axis=0)
-        return node_features
-
 
 def get_edges(xyzs: list[torch.Tensor], Zs: list[torch.Tensor], tolerance: int = 0.2):
     edges = []
@@ -153,7 +139,7 @@ def make_graph(xyzs: list[torch.Tensor], Zs: list[torch.Tensor]):
     return pos, edges, classes, batch_nodes
 
 
-def collate_graphs(samples: list[dict[str, np.ndarray | int]]):
+def collate_graphs(samples: list[dict[str, np.ndarray | int]]) -> dict[str, torch.Tensor | list[torch.Tensor]]:
 
     # Convert to tensors
     batch = {k: [] for k in samples[0].keys()}
@@ -189,9 +175,6 @@ def collate_graphs(samples: list[dict[str, np.ndarray | int]]):
     for k, v in batch.items():
         if k not in ["xyzs", "Zs"]:  # Molecules have variable number of atoms, so cannot stack them
             batch[k] = torch.stack(v, dim=0)
-
-    # Make input by down-sampling the reference density
-    batch["input"] = (4**3) * nn.functional.avg_pool3d(batch["density"], kernel_size=4, stride=4)
 
     # Combine all molecules to one graph
     pos, edges, classes, batch_nodes = make_graph(batch["xyzs"], batch["Zs"])
