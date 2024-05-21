@@ -12,8 +12,8 @@ if __name__ == "__main__":
 
     device = "cuda"
 
-    mpnn_encoder = MPNNEncoder(device=device, n_class=7)
-    model = DensityGridNN(mpnn_encoder, device=device)
+    mpnn_encoder = MPNNEncoder(device=device, node_embed_size=128, n_class=7)
+    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 16], device=device)
 
     n_batch = 2
     pos = torch.rand(15, 3, device=device)
@@ -37,5 +37,5 @@ if __name__ == "__main__":
     x = model(atom_grid, classes, edges, batch_nodes)
 
     torch.cuda.synchronize()
-    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle") # Visualize using https://pytorch.org/memory_viz
     print(time.perf_counter() - t0)

@@ -60,7 +60,7 @@ if __name__ == "__main__":
 
     device = "cuda"
     n_epoch = 5
-    batch_size = 2
+    batch_size = 8
     # data_dir = Path("/scratch/work/oinonen1/density_db")
     data_dir = Path("/mnt/triton/density_db")
     loss_log_path = Path("loss_log.csv")
@@ -77,8 +77,15 @@ if __name__ == "__main__":
     with open(loss_log_path, "w"):
         pass
 
-    mpnn_encoder = MPNNEncoder(n_class=len(CLASSES), iters=12, node_embed_size=128, hidden_size=128, message_size=128, device=device)
-    model = DensityGridNN(mpnn_encoder, device=device)
+    mpnn_encoder = MPNNEncoder(
+        n_class=len(CLASSES),
+        iters=12,
+        node_embed_size=128,
+        hidden_size=128,
+        message_size=128,
+        device=device,
+    )
+    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 16], device=device)
     optimizer = Adam(model.parameters(), lr=5e-4)
     scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=1000, T_mult=2)
     criterion = nn.MSELoss(reduction="mean")
@@ -105,7 +112,7 @@ if __name__ == "__main__":
                 batch_nodes = batch["batch_nodes"]
 
                 # Forward
-                q_pred, c = model(atom_grid, classes, edges, batch_nodes)
+                q_pred = model(atom_grid, classes, edges, batch_nodes)
                 loss = criterion(q_pred, q_ref)
 
                 # Backward
@@ -129,13 +136,6 @@ if __name__ == "__main__":
                     batch_pred["density"] = q_pred.detach().cpu().numpy()
                     save_to_xsf(densities_dir / f"density_{i_batch}_ref.xsf", batch)
                     save_to_xsf(densities_dir / f"density_{i_batch}_pred.xsf", batch_pred)
-
-                    c = c.detach().cpu().numpy()
-                    for k in range(8):
-                        batch_c = deepcopy(batch)
-                        batch_c["density"] = c[:, :, :, :, k]
-                        save_to_xsf(densities_dir / f"density_{i_batch}_c{k}.xsf", batch_c)
-                        
 
                     # Save model
                     torch.save(
