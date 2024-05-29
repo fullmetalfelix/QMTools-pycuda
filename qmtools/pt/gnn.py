@@ -84,7 +84,7 @@ class MPNNEncoder(nn.Module):
 
             # Calculate messages for all edges and add them to start nodes
             messages = self.msg_net(inputs)
-            a = torch.zeros(node_features.size(0), self.message_size, device=self.device)
+            a = torch.zeros(node_features.size(0), self.message_size, device=self.device, dtype=messages.dtype)
             a.index_add_(0, edges_sym[0], messages)
 
             # Update node features
@@ -146,9 +146,9 @@ def collate_graphs(samples: list[dict[str, np.ndarray | int]]) -> dict[str, torc
     for sample in samples:
         for k, v in sample.items():
             if isinstance(v, np.ndarray):
-                batch[k].append(torch.from_numpy(v))
+                batch[k].append(torch.from_numpy(v).float())
             else:
-                batch[k].append(torch.tensor(v))
+                batch[k].append(torch.tensor(v).float())
 
     # Pad densities with zeros in order to make them the same size
     max_shape, _ = torch.stack([torch.tensor(d.shape) for d in batch["density"]], dim=0).max(dim=0)

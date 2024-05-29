@@ -21,25 +21,16 @@ class AtomGrid:
         self.grid_shape = grid_shape
         self.device = device
 
-    def pairwise_similarity(self, scale: torch.Tensor, downscale_factor: int = 1) -> torch.Tensor:
-        lorentzians = []
-        n_xyz = [s // downscale_factor for s in self.grid_shape]
-        for i_batch in range(self.pos.shape[0]):
-            o = self.origin[i_batch]
-            l = self.lattice[i_batch].diag()
-            grid_xyz = [torch.linspace(o[i], o[i] + l[i], n_xyz[i], device=self.device) for i in range(3)]
-            grid = torch.stack(torch.meshgrid(*grid_xyz, indexing="ij"), dim=-1)  # grid.shape = (mx, my, mz, 3)
-            grid = grid.reshape(1, -1, 3)  # grid.shape = (1, m_voxel, 3)
-            distance = torch.cdist(grid, self.pos[i_batch][None], p=2)  # distance.shape = (1, m_voxel, n_atom)
-            lorentz = scale / (scale**2 + distance**2)  # lorenz.shape = (1, m_voxel, n_atom)
-            lorentzians.append(lorentz)
-        lorentzians = torch.cat(lorentzians, dim=0)  # distances.shape = (n_batch, m_voxel, n_atom)
-        return lorentzians, n_xyz
-
 
 class DensityGridNN(nn.Module):
 
-    def __init__(self, mpnn: MPNNEncoder, proj_channels: list[int], device: str | torch.device = "cpu"):
+    def __init__(
+        self,
+        mpnn: MPNNEncoder,
+        proj_channels: list[int],
+        per_channel_scale: bool = False,
+        device: str | torch.device = "cpu",
+    ):
         super().__init__()
 
         self.mpnn = mpnn
@@ -64,8 +55,12 @@ class DensityGridNN(nn.Module):
                 )
             )
 
-        # Separate scale parameter for each upsampling stage
-        self.scale = nn.Parameter(0.5 + 0.2 * (torch.rand(self.n_stage) - 0.5))
+        if per_channel_scale:
+            # Separate scale parameter for each channel in every upsampling stage
+            self.scale = nn.ParameterList([nn.Parameter(0.5 + 0.2 * (torch.rand(c) - 0.5)) for c in proj_channels[:-1]])
+        else:
+            # Separate scale parameter for each upsampling stage
+            self.scale = nn.Parameter(0.5 + 0.2 * (torch.rand(self.n_stage) - 0.5))
 
         self.device = device
         self.to(device)
@@ -75,6 +70,7 @@ class DensityGridNN(nn.Module):
         # number of nodes as the biggest graph.
         # node_features.shape: (n_node_total, node_embed_size) -> (n_batch, n_node_biggest, node_embed_size)
         # atom_grid.pos.shape: (n_node_total, 3) -> (n_batch, n_node_biggest, 3)
+        dtype = node_features.dtype
         node_features = torch.split(node_features, split_size_or_sections=batch_nodes)
         pos = torch.split(atom_grid.pos, split_size_or_sections=batch_nodes)
         max_size = max(batch_nodes)
@@ -84,7 +80,7 @@ class DensityGridNN(nn.Module):
             assert f.shape[0] == p.shape[0], "Inconsistent node count"
             pad_size = max_size - f.shape[0]
             if pad_size > 0:
-                f = torch.cat([f, torch.zeros(pad_size, f.shape[1], device=self.device)], dim=0)
+                f = torch.cat([f, torch.zeros(pad_size, f.shape[1], device=self.device, dtype=dtype)], dim=0)
                 p = torch.cat([p, torch.zeros(pad_size, p.shape[1], device=self.device)], dim=0)
             node_features_padded.append(f)
             pos_padded.append(p)
@@ -92,24 +88,51 @@ class DensityGridNN(nn.Module):
         atom_grid.pos = torch.stack(pos_padded, axis=0)
         return node_features, atom_grid
 
+    def pairwise_similarity(
+        self, atom_grid: AtomGrid, stage: int, dtype: torch.dtype, batch_nodes: list[int]
+    ) -> tuple[torch.Tensor, list[int]]:
+
+        scale = self.scale[stage].type(dtype)
+        if scale.shape != ():
+            scale = scale[None, None, None]  # scale.shape = (1, 1, 1, c)
+        else:
+            scale = scale[None, None, None, None]  # scale.shape = (1, 1, 1, 1) (c=1)
+
+        downscale_factor = 2 ** (self.n_stage - stage - 1)
+        n_xyz = [s // downscale_factor for s in atom_grid.grid_shape]
+        l = atom_grid.lattice[0].diag()  # The lattice is assumed to be the same size for all batch items here
+
+        grid_xyz = [torch.linspace(0, l[i], n_xyz[i], device=self.device) for i in range(3)]
+        grid = torch.stack(torch.meshgrid(*grid_xyz, indexing="ij"), dim=-1)  # grid.shape = (nx, ny, nz, 3)
+        grid = grid.reshape(1, -1, 3)  # grid.shape = (1, n_voxel, 3)
+        grid = grid + atom_grid.origin[:, None, :]  # grid.shape = (n_batch, n_voxel, 3)
+
+        distance = torch.cdist(grid, atom_grid.pos, p=2)  # distance.shape = (n_batch, n_voxel, n_atom)
+        distance = distance[:, :, :, None]  # distance.shape = (n_batch, n_voxel, n_atom, 1)
+        distance = distance.type(dtype)
+
+        # Some of the entries in the molecule embedding are padding due to different size molecule graphs.
+        # We set the corresponding entries to have a distance of inf, so that the weight will be 0.
+        for i_batch, n_node in enumerate(batch_nodes):
+            distance[i_batch, :, n_node:, :] = torch.inf
+
+        lorentz = scale / (scale * scale + distance * distance)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
+
+        return lorentz, n_xyz
+
     def project_onto_grid(self, stage: int, node_features: torch.Tensor, atom_grid: AtomGrid, batch_nodes: list[int]):
 
         n_batch = len(batch_nodes)
 
         # We use the pairwise distances between each voxel and atom as weights for projecting the node
         # embeddings onto a grid.
-        downscale_factor = 2 ** (self.n_stage - stage - 1)
-        weight, (nx, ny, nz) = atom_grid.pairwise_similarity(scale=self.scale[stage], downscale_factor=downscale_factor)
-        # weight.shape = (n_batch, n_voxel, n_atom), n_voxel = nx * ny * nz
-
-        # Some of the entries in the molecule embedding are padding due to different size molecule graphs.
-        # We set the corresponding entries to have a weight of 0
-        for i_batch in range(n_batch):
-            weight[i_batch, :, batch_nodes[i_batch] :] = 0
+        weight, (nx, ny, nz) = self.pairwise_similarity(atom_grid, stage, node_features.dtype, batch_nodes)
+        # weight.shape = (n_batch, n_voxel, n_atom, c_proj), n_voxel = nx * ny * nz
 
         # Project the node embeddings onto the grid.
         node_features = self.node_projections[stage](node_features)  # node_features.shape = (n_batch, n_atom, c_proj)
-        x = torch.matmul(weight, node_features)  # x.shape = (n_batch, n_voxel, c_proj)
+        node_features = node_features.unsqueeze(1)  # node_features.shape = (n_batch, 1, n_atom, c_proj)
+        x = (weight * node_features).sum(dim=2)  # x.shape = (n_batch, n_voxel, c_proj)
         x = x.transpose(1, 2)  # x.shape = (n_batch, c_proj, n_voxel)
         x = x.reshape(n_batch, x.shape[1], nx, ny, nz)  # x.shape = (n_batch, c_proj, nx, ny, nz)
 
@@ -121,8 +144,6 @@ class DensityGridNN(nn.Module):
         node_features, atom_grid = self.split_graph(node_features, atom_grid, batch_nodes)
         # node_features.shape = (n_batch, n_atom, c_node)
         # atom_grid.pos.shape = (n_batch, n_atom, 3)
-
-        # print(self.scale)
 
         x = None
         for stage in range(self.n_stage):

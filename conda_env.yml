@@ -12,3 +12,4 @@ dependencies:
   - pytorch-cuda=12.1
   - cuda
   - requests
+  - ase

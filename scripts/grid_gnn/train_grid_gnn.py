@@ -60,9 +60,10 @@ if __name__ == "__main__":
 
     device = "cuda"
     n_epoch = 5
-    batch_size = 8
-    # data_dir = Path("/scratch/work/oinonen1/density_db")
-    data_dir = Path("/mnt/triton/density_db")
+    batch_size = 1
+    use_amp = True
+    data_dir = Path("/scratch/work/oinonen1/density_db")
+    # data_dir = Path("/mnt/triton/density_db")
     loss_log_path = Path("loss_log.csv")
     checkpoint_dir = Path("checkpoints")
     densities_dir = Path("densities")
@@ -85,10 +86,11 @@ if __name__ == "__main__":
         message_size=128,
         device=device,
     )
-    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 16], device=device)
+    model = DensityGridNN(mpnn_encoder, proj_channels=[128, 32, 8], per_channel_scale=True, device=device)
     optimizer = Adam(model.parameters(), lr=5e-4)
-    scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=1000, T_mult=2)
+    scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: 1 / (1 + nb / 10000))
     criterion = nn.MSELoss(reduction="mean")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     print("Encoder parameters:", sum(p.numel() for p in mpnn_encoder.parameters() if p.requires_grad))
     print("Total parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -112,13 +114,15 @@ if __name__ == "__main__":
                 batch_nodes = batch["batch_nodes"]
 
                 # Forward
-                q_pred = model(atom_grid, classes, edges, batch_nodes)
-                loss = criterion(q_pred, q_ref)
+                with torch.autocast(device_type=device, dtype=torch.float16, enabled=use_amp):
+                    q_pred = model(atom_grid, classes, edges, batch_nodes)
+                    loss = criterion(q_pred, q_ref)
 
                 # Backward
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
                 scheduler.step()
 
                 loss = loss.item()
@@ -131,6 +135,8 @@ if __name__ == "__main__":
 
                     print("Current learning rate:", scheduler.get_last_lr())
 
+                    print([s for s in model.scale])
+
                     # Save density
                     batch_pred = deepcopy(batch)
                     batch_pred["density"] = q_pred.detach().cpu().numpy()
@@ -142,6 +148,7 @@ if __name__ == "__main__":
                         {
                             "model_state": model.state_dict(),
                             "scheduler_state": scheduler.state_dict(),
+                            "scaler_state": scaler.state_dict()
                         },
                         checkpoint_dir / f"weights_{i_batch}.pth",
                     )
