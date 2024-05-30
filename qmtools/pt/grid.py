@@ -1,3 +1,4 @@
+from copy import deepcopy
 import torch
 from torch import nn
 
@@ -20,6 +21,35 @@ class AtomGrid:
         self.lattice = lattice.to(device)  # lattice.shape = (n_batch, 3, 3)
         self.grid_shape = grid_shape
         self.device = device
+
+
+class Lorentzian(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, distance, scale):
+        # distance.shape = (n_batch, n_voxel, n_atom, 1)
+        # scale.shape = (1, 1, 1, c)
+        lorentz = scale / (scale * scale + distance * distance)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
+        ctx.save_for_backward(distance, scale, lorentz)
+        return lorentz
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        distance, scale, lorentz = ctx.saved_tensors
+        # distance.shape = (n_batch, n_voxel, n_atom, 1)
+        # scale.shape = (1, 1, 1, c)
+        # lorentz.shape = (n_batch, n_voxel, n_atom, c)
+        grad_distance = grad_scale = None
+        s_inv = 1 / scale
+        if ctx.needs_input_grad[0]:
+            grad_distance = grad_output * -2 * distance * s_inv * lorentz * lorentz
+        if ctx.needs_input_grad[1]:
+            grad_scale = s_inv - 2 * lorentz
+            grad_scale *= lorentz * grad_output  # Slightly reduced memory usage from doing this in-place
+        return grad_distance, grad_scale
+
+
+lorentzian = Lorentzian.apply
 
 
 class DensityGridNN(nn.Module):
@@ -85,6 +115,7 @@ class DensityGridNN(nn.Module):
             node_features_padded.append(f)
             pos_padded.append(p)
         node_features = torch.stack(node_features_padded, axis=0)
+        atom_grid = deepcopy(atom_grid)
         atom_grid.pos = torch.stack(pos_padded, axis=0)
         return node_features, atom_grid
 
@@ -116,7 +147,7 @@ class DensityGridNN(nn.Module):
         for i_batch, n_node in enumerate(batch_nodes):
             distance[i_batch, :, n_node:, :] = torch.inf
 
-        lorentz = scale / (scale * scale + distance * distance)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
+        lorentz = lorentzian(distance, scale)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
 
         return lorentz, n_xyz
 

@@ -1,19 +1,20 @@
+import sys
 import time
 
 import torch
+from torch.profiler import ProfilerActivity, profile, record_function
 
-import sys
 sys.path.append("../..")
 
 from qmtools.pt.gnn import MPNNEncoder
-from qmtools.pt.grid import AtomGrid, DensityGridNN
+from qmtools.pt.grid import AtomGrid, DensityGridNN, lorentzian
 
 if __name__ == "__main__":
 
     device = "cuda"
 
     mpnn_encoder = MPNNEncoder(device=device, node_embed_size=128, n_class=7)
-    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 4], per_channel_scale=True, device=device)
+    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 2], per_channel_scale=True, device=device)
     # model = torch.compile(model)
 
     n_batch = 2
@@ -31,6 +32,7 @@ if __name__ == "__main__":
     atom_grid = AtomGrid(pos, origin, lattice, grid_shape=(120, 120, 120), device=device)
     batch_nodes = [5, 10]
 
+    # Test memory usage
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     torch.cuda.memory._record_memory_history()
@@ -38,7 +40,27 @@ if __name__ == "__main__":
     with torch.autocast(device_type=device, dtype=torch.float16, enabled=True):
         print(classes.dtype, edges.dtype)
         x = model(atom_grid, classes, edges, batch_nodes)
+        loss = torch.nn.functional.mse_loss(x, torch.rand_like(x))
+
+    loss.backward()
 
     torch.cuda.synchronize()
     torch.cuda.memory._dump_snapshot("memory_snapshot.pickle") # Visualize using https://pytorch.org/memory_viz
     print(time.perf_counter() - t0)
+
+    # Profile execution time
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        x = model(atom_grid, classes, edges, batch_nodes)
+        loss = torch.nn.functional.mse_loss(x, torch.rand_like(x))
+        loss.backward()
+    prof.export_chrome_trace("trace.json")
+
+    # Check correctness of lorentzian gradient calculation
+    distance = torch.rand(1, 100, 15, 1, requires_grad=True, dtype=torch.float64)
+    scale = torch.rand(1, 1, 1, 10, requires_grad=True, dtype=torch.float64)
+
+    torch.autograd.gradcheck(lorentzian, (distance, scale))
+    torch.autograd.gradgradcheck(lorentzian, (distance, scale))
+
+    l = lorentzian(distance, scale)
+    assert l.shape == (1, 100, 15, 10)

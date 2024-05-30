@@ -9,7 +9,7 @@
 
 # Load modules
 module load mamba
-source activate qmtools
+source activate qmtools2
 
 # Print job info
 echo "Job ID: "$SLURM_JOB_ID
@@ -23,4 +23,4 @@ conda list
 pip list
 
 # Run script
-python train_grid_gnn.py
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train_grid_gnn.py
