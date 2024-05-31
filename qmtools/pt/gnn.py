@@ -49,7 +49,6 @@ class MPNNEncoder(nn.Module):
             nn.Linear(hidden_size, message_size),
         )
         self.gru_node = nn.GRUCell(message_size, node_embed_size)
-        self.gru_edge = nn.GRUCell(message_size, node_embed_size)
 
         self.device = device
         self.to(device)
@@ -70,11 +69,6 @@ class MPNNEncoder(nn.Module):
         dst_pos = pos.index_select(0, edges_sym[1])
         d_pos = dst_pos - src_pos
 
-        # Initialize edge features to the average of the nodes they are connecting
-        src_features = node_features.index_select(0, edges[0])
-        dst_features = node_features.index_select(0, edges[1])
-        edge_features = (src_features + dst_features) / 2
-
         for _ in range(self.iters):
 
             # Gather start and end nodes of edges
@@ -89,11 +83,6 @@ class MPNNEncoder(nn.Module):
 
             # Update node features
             node_features = self.gru_node(a, node_features)
-
-            # Update edge features
-            n_edge = edges.shape[1]
-            b = (messages[:n_edge] + messages[n_edge:]) / 2  # Average over two directions
-            edge_features = self.gru_edge(b, edge_features)
 
         return node_features
 
