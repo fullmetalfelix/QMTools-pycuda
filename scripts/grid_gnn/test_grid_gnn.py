@@ -14,7 +14,13 @@ if __name__ == "__main__":
     device = "cuda"
 
     mpnn_encoder = MPNNEncoder(device=device, node_embed_size=128, n_class=7)
-    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 2], per_channel_scale=True, device=device)
+    model = DensityGridNN(
+        mpnn_encoder,
+        proj_channels=[64, 32, 4],
+        cnn_channels=[64, 32, 16],
+        per_channel_scale=True,
+        device=device,
+    )
     # model = torch.compile(model)
 
     n_batch = 2
@@ -45,7 +51,7 @@ if __name__ == "__main__":
     loss.backward()
 
     torch.cuda.synchronize()
-    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle") # Visualize using https://pytorch.org/memory_viz
+    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")  # Visualize using https://pytorch.org/memory_viz
     print(time.perf_counter() - t0)
 
     # Profile execution time
@@ -54,6 +60,7 @@ if __name__ == "__main__":
         loss = torch.nn.functional.mse_loss(x, torch.rand_like(x))
         loss.backward()
     prof.export_chrome_trace("trace.json")
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
 
     # Check correctness of lorentzian gradient calculation
     distance = torch.rand(1, 100, 15, 1, requires_grad=True, dtype=torch.float64)

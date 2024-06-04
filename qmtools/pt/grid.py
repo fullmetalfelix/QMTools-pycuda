@@ -58,36 +58,41 @@ class DensityGridNN(nn.Module):
         self,
         mpnn: MPNNEncoder,
         proj_channels: list[int],
+        cnn_channels: list[int],
         per_channel_scale: bool = False,
         device: str | torch.device = "cpu",
     ):
         super().__init__()
 
+        assert len(proj_channels) == len(cnn_channels)
+
         self.mpnn = mpnn
         self.n_stage = len(proj_channels)
 
         self.node_projections = nn.ModuleList([])
+        self.proj_convs = nn.ModuleList([])
         self.conv_blocks = nn.ModuleList([])
-        proj_channels.append(1)  # The final feature map only has a single channel corresponding to the electron density
+        cnn_channels.append(1)  # The final feature map only has a single channel corresponding to the electron density
         for stage in range(self.n_stage):
             self.node_projections.append(nn.Linear(mpnn.node_embed_size, proj_channels[stage]))
+            self.proj_convs.append(nn.Conv3d(proj_channels[stage], cnn_channels[stage], kernel_size=1))
             self.conv_blocks.append(
                 nn.Sequential(
                     ResBlock(
-                        proj_channels[stage],
-                        proj_channels[stage],
+                        cnn_channels[stage],
+                        cnn_channels[stage],
                         kernel_size=3,
                         depth=2,
                         padding_mode="circular",
                         activation=nn.ReLU(),
                     ),
-                    nn.Conv3d(proj_channels[stage], proj_channels[stage + 1], kernel_size=1),
+                    nn.Conv3d(cnn_channels[stage], cnn_channels[stage + 1], kernel_size=1),
                 )
             )
 
         if per_channel_scale:
             # Separate scale parameter for each channel in every upsampling stage
-            self.scale = nn.ParameterList([nn.Parameter(0.5 + 0.2 * (torch.rand(c) - 0.5)) for c in proj_channels[:-1]])
+            self.scale = nn.ParameterList([nn.Parameter(0.5 + 0.2 * (torch.rand(c) - 0.5)) for c in proj_channels])
         else:
             # Separate scale parameter for each upsampling stage
             self.scale = nn.Parameter(0.5 + 0.2 * (torch.rand(self.n_stage) - 0.5))
@@ -167,6 +172,8 @@ class DensityGridNN(nn.Module):
         x = x.transpose(1, 2)  # x.shape = (n_batch, c_proj, n_voxel)
         x = x.reshape(n_batch, x.shape[1], nx, ny, nz)  # x.shape = (n_batch, c_proj, nx, ny, nz)
 
+        x = self.proj_convs[stage](x)  # x.shape = (n_batch, c_cnn, nx, ny, nz)
+
         return x
 
     def forward(self, atom_grid: AtomGrid, classes: torch.Tensor, edges: torch.Tensor, batch_nodes: list[int]) -> torch.Tensor:
@@ -181,7 +188,7 @@ class DensityGridNN(nn.Module):
 
             # Project the node embeddings onto a grid
             x_grid = self.project_onto_grid(stage, node_features, atom_grid, batch_nodes)
-            # x_grid.shape = (n_batch, c_proj, nx, ny, nz)
+            # x_grid.shape = (n_batch, c, nx, ny, nz)
 
             if stage == 0:
                 # On the first stage we simply use the projection as the feature map
@@ -190,11 +197,11 @@ class DensityGridNN(nn.Module):
                 # After first stage the grid projection is added to the previous feature map. The feature map
                 # from the previous stage needs to be upscaled in order to be of the same shape as the current
                 # projection.
-                # x.shape: (n_batch, c_proj, nx / 2, ny / 2, nz / 2) -> (n_batch, c_proj, nx, ny, nz)
+                # x.shape: (n_batch, c, nx / 2, ny / 2, nz / 2) -> (n_batch, c, nx, ny, nz)
                 x = nn.functional.interpolate(x, size=x_grid.shape[2:], mode="trilinear", align_corners=False)
                 x = x + x_grid
 
-            x = self.conv_blocks[stage](x)  # x.shape = (n_batch, c_proj_next, nx, ny, nz)
+            x = self.conv_blocks[stage](x)  # x.shape = (n_batch, c_next, nx, ny, nz)
 
         x = x.squeeze(1)  # x.shape = (n_batch, nx, ny, nz)
 
