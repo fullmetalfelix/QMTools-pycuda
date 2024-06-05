@@ -1,8 +1,8 @@
 import math
 import os
+import pickle
 import random
 import sys
-import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -27,19 +27,19 @@ def save_to_xsf(file_path: Path, sample: dict[str, np.ndarray]):
         write_xsf(f, [atoms], data=sample["density"][0])
 
 
-def make_dataloader(data_dir: Path, batch_size: int, rank: int, world_size: int):
-    dataset = DensityDataset(data_dir, rank, world_size)
+def make_dataloader(data_dir: Path, sample_paths: list[int], batch_size: int, rank: int, world_size: int):
+    dataset = DensityDataset(data_dir, sample_paths, rank, world_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=1, collate_fn=collate_graphs)
     return dataloader, dataset
 
 
 class DensityDataset(Dataset):
 
-    def __init__(self, data_dir: Path, rank: int, world_size: int):
+    def __init__(self, data_dir: Path, sample_paths: list[Path], rank: int, world_size: int):
         self.data_dir = data_dir
-        sample_paths = sorted(list(data_dir.glob("*.npz")))
         chunk_size = math.ceil(len(sample_paths) / world_size)
-        self.sample_paths = sample_paths[rank * chunk_size : (rank + 1) * chunk_size]
+        sample_paths = sample_paths[rank * chunk_size : (rank + 1) * chunk_size]
+        self.sample_paths = [data_dir / p for p in sample_paths]
 
     def __len__(self) -> int:
         return len(self.sample_paths)
@@ -70,12 +70,14 @@ def run(local_rank, global_rank, world_size):
     dist.init_process_group("nccl")
 
     device = local_rank
-    n_epoch = 50
-    batch_size = 2
+    n_epoch = 25
+    batch_size = 4
     use_amp = True
     data_dir = Path("/scratch/work/oinonen1/density_db")
     # data_dir = Path("/mnt/triton/density_db")
-    loss_log_path = Path("loss_log.csv")
+    sample_dict_path = Path("./sample_dict.pickle")
+    loss_log_path_train = Path("loss_log_train.csv")
+    loss_log_path_val = Path("loss_log_val.csv")
     checkpoint_dir = Path("checkpoints")
     densities_dir = Path("densities")
 
@@ -86,7 +88,7 @@ def run(local_rank, global_rank, world_size):
 
     checkpoint_dir.mkdir(exist_ok=True)
     densities_dir.mkdir(exist_ok=True)
-    with open(loss_log_path, "w"):
+    with open(loss_log_path_train, "w"):
         pass
 
     mpnn_encoder = MPNNEncoder(
@@ -97,7 +99,13 @@ def run(local_rank, global_rank, world_size):
         message_size=128,
         device=device,
     )
-    model = DensityGridNN(mpnn_encoder, proj_channels=[64, 32, 12], per_channel_scale=True, device=device)
+    model = DensityGridNN(
+        mpnn_encoder,
+        proj_channels=[64, 16, 4],
+        cnn_channels=[128, 64, 32],
+        per_channel_scale=True,
+        device=device,
+    )
     model = DistributedDataParallel(model, device_ids=[device], find_unused_parameters=False)
     optimizer = Adam(model.parameters(), lr=5e-4)
     scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: 1 / (1 + nb / 10000))
@@ -108,84 +116,24 @@ def run(local_rank, global_rank, world_size):
         print("Encoder parameters:", sum(p.numel() for p in mpnn_encoder.parameters() if p.requires_grad))
         print("Total parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
-    dataloader, dataset = make_dataloader(data_dir, batch_size, global_rank, world_size)
-    print(f"Rank {global_rank}: {len(dataset)} samples, {math.ceil(len(dataset) / batch_size)} batches in an epoch.")
+    with open(sample_dict_path, "rb") as f:
+        sample_dict = pickle.load(f)
+        samples_train, samples_val = [sample_dict[s] for s in ["train", "val"]]
+    dataloader_train, dataset_train = make_dataloader(data_dir, samples_train, batch_size, global_rank, world_size)
+    dataloader_val, dataset_val = make_dataloader(data_dir, samples_val, batch_size, global_rank, world_size)
+    print(f"Rank {global_rank}: ")
+    print(f"{len(dataset_train)} train samples, {math.ceil(len(dataset_train) / batch_size)} batches in an epoch.")
+    print(f"{len(dataset_val)} val samples, {math.ceil(len(dataset_val) / batch_size)} batches in an epoch.")
 
-    try:
-        # Train
+    losses = []
+    i_batch = 0
+    for i_epoch in range(1, n_epoch + 1):
+
+        if global_rank == 0:
+            print(f"Epoch {i_epoch}")
+
         model.train()
-        losses = []
-        i_batch = 0
-        for i_epoch in range(n_epoch):
-
-            if global_rank == 0:
-                print(f"Epoch {i_epoch}")
-
-            for batch in dataloader:
-
-                q_ref = batch["density"].to(device)
-                classes = batch["classes"].to(device)
-                edges = batch["edges"].to(device)
-                atom_grid = AtomGrid(batch["pos"], batch["origin"], batch["lattice"], q_ref.shape[1:], device=device)
-                batch_nodes = batch["batch_nodes"]
-
-                # Forward
-                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-                    q_pred = model(atom_grid, classes, edges, batch_nodes)
-                    loss = criterion(q_pred, q_ref)
-
-                # Backward
-                optimizer.zero_grad(set_to_none=True)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()
-
-                loss = loss.item()
-                losses.append(loss)
-
-                if global_rank == 0:
-                    print(f"{i_batch}: {np.mean(losses)}")
-
-                if i_batch % 1000 == 0 and global_rank == 0:
-
-                    print("Current learning rate:", scheduler.get_last_lr())
-
-                    print([s for s in model.module.scale])
-
-                    # Save density
-                    batch_pred = deepcopy(batch)
-                    batch_pred["density"] = q_pred.detach().cpu().numpy()
-                    save_to_xsf(densities_dir / f"density_{i_batch}_ref.xsf", batch)
-                    save_to_xsf(densities_dir / f"density_{i_batch}_pred.xsf", batch_pred)
-
-                    # Save model
-                    torch.save(
-                        {
-                            "model_state": model.module.state_dict(),
-                            "scheduler_state": scheduler.state_dict(),
-                            "scaler_state": scaler.state_dict(),
-                        },
-                        checkpoint_dir / f"weights_{i_batch}.pth",
-                    )
-
-                    # Save loss to file
-                    with open(loss_log_path, "a") as f:
-                        loss = np.mean(losses)
-                        f.write(f"{i_batch},{loss}\n")
-
-                    losses = []
-
-                i_batch += 1
-
-    except KeyboardInterrupt:
-        pass
-
-    if global_rank == 0:
-        # Do a test run
-        model.eval()
-        batch = collate_graphs([dataset[0]])
-        with torch.no_grad():
+        for batch in dataloader_train:
 
             q_ref = batch["density"].to(device)
             classes = batch["classes"].to(device)
@@ -193,17 +141,97 @@ def run(local_rank, global_rank, world_size):
             atom_grid = AtomGrid(batch["pos"], batch["origin"], batch["lattice"], q_ref.shape[1:], device=device)
             batch_nodes = batch["batch_nodes"]
 
-            q_pred = model(atom_grid, classes, edges, batch_nodes)
-            loss = criterion(q_pred, q_ref)
+            # Forward
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                q_pred = model(atom_grid, classes, edges, batch_nodes)
+                loss = criterion(q_pred, q_ref)
 
-        batch_pred = deepcopy(batch)
-        batch_pred["density"] = q_pred.detach().cpu().numpy()
-        save_to_xsf(densities_dir / f"density_test_ref.xsf", batch)
-        save_to_xsf(densities_dir / f"density_test_pred.xsf", batch_pred)
+            # Backward
+            optimizer.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
 
-        with open(loss_log_path, "a") as f:
             loss = loss.item()
-            f.write(f"{i_batch+100},{loss}\n")
+            losses.append(loss)
+
+            if global_rank == 0:
+                print(f"{i_batch}: {np.mean(losses)}")
+
+            if i_batch % 1000 == 0:
+
+                loss = np.mean(losses)
+                if world_size > 1:
+                    # Take an average of the loss value across parallel ranks
+                    loss = torch.tensor(loss).to(device)
+                    dist.all_reduce(loss, dist.ReduceOp.SUM)
+                    loss = loss.cpu().item()
+                    loss /= world_size
+
+                if global_rank == 0:
+
+                    print("Current learning rate:", scheduler.get_last_lr())
+                    print([s for s in model.module.scale])
+
+                    # Save loss to file
+                    with open(loss_log_path_train, "a") as f:
+                        f.write(f"{i_batch},{loss}\n")
+
+                losses = []
+
+            i_batch += 1
+
+        # Validation
+        losses_val = []
+        for i_val_batch, batch in enumerate(dataloader_val):
+
+            q_ref = batch["density"].to(device)
+            classes = batch["classes"].to(device)
+            edges = batch["edges"].to(device)
+            atom_grid = AtomGrid(batch["pos"], batch["origin"], batch["lattice"], q_ref.shape[1:], device=device)
+            batch_nodes = batch["batch_nodes"]
+
+            # Forward
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                with torch.no_grad():
+                    q_pred = model(atom_grid, classes, edges, batch_nodes)
+                    loss = criterion(q_pred, q_ref)
+
+            loss = loss.item()
+            losses_val.append(loss)
+
+            if global_rank == 0:
+                print(f"val {i_val_batch}: {np.mean(losses_val)}")
+
+        val_loss = np.mean(losses_val)
+        if world_size > 1:
+            # Take an average of the loss value across parallel ranks
+            val_loss = torch.tensor(val_loss).to(device)
+            dist.all_reduce(val_loss, dist.ReduceOp.SUM)
+            val_loss = val_loss.cpu().item()
+            val_loss /= world_size
+
+        if global_rank == 0:
+            # Save validation loss to file
+            with open(loss_log_path_val, "a") as f:
+                f.write(f"{i_batch}, {i_epoch},{val_loss}\n")
+
+            # Save density from last validation batch
+            batch_pred = deepcopy(batch)
+            batch_pred["density"] = q_pred.detach().cpu().numpy()
+            save_to_xsf(densities_dir / f"density_{i_epoch}_ref.xsf", batch)
+            save_to_xsf(densities_dir / f"density_{i_epoch}_pred.xsf", batch_pred)
+
+            # Save model
+            torch.save(
+                {
+                    "model_state": model.module.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "scaler_state": scaler.state_dict(),
+                },
+                checkpoint_dir / f"weights_{i_epoch}.pth",
+            )
 
 
 if __name__ == "__main__":
