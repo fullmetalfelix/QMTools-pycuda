@@ -37,7 +37,8 @@ class DensityDataset(Dataset):
 
     def __init__(self, data_dir: Path, sample_paths: list[Path], rank: int, world_size: int):
         self.data_dir = data_dir
-        chunk_size = math.ceil(len(sample_paths) / world_size)
+        # Flooring here can result in leaving samples unused, but gives consistent number of samples across ranks
+        chunk_size = math.floor(len(sample_paths) / world_size) 
         sample_paths = sample_paths[rank * chunk_size : (rank + 1) * chunk_size]
         self.sample_paths = [data_dir / p for p in sample_paths]
 
@@ -75,7 +76,7 @@ def run(local_rank, global_rank, world_size):
     use_amp = True
     data_dir = Path("/scratch/work/oinonen1/density_db")
     # data_dir = Path("/mnt/triton/density_db")
-    sample_dict_path = Path("./sample_dict.pickle")
+    sample_dict_path = Path("../sample_dict.pickle")
     loss_log_path_train = Path("loss_log_train.csv")
     loss_log_path_val = Path("loss_log_val.csv")
     checkpoint_dir = Path("checkpoints")
