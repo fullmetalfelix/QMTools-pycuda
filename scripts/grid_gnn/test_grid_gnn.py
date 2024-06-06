@@ -7,7 +7,7 @@ from torch.profiler import ProfilerActivity, profile, record_function
 sys.path.append("../..")
 
 from qmtools.pt.gnn import MPNNEncoder
-from qmtools.pt.grid import AtomGrid, DensityGridNN, lorentzian
+from qmtools.pt.grid import AtomGrid, DensityGridNN, GridLoss, lorentzian
 
 if __name__ == "__main__":
 
@@ -16,11 +16,12 @@ if __name__ == "__main__":
     mpnn_encoder = MPNNEncoder(device=device, node_embed_size=128, n_class=7)
     model = DensityGridNN(
         mpnn_encoder,
-        proj_channels=[64, 32, 4],
-        cnn_channels=[64, 32, 16],
+        proj_channels=[64, 32, 2],
+        cnn_channels=[64, 32, 8],
         per_channel_scale=True,
         device=device,
     )
+    criterion = GridLoss(grad_factor=1)
     # model = torch.compile(model)
 
     n_batch = 2
@@ -46,9 +47,9 @@ if __name__ == "__main__":
     with torch.autocast(device_type=device, dtype=torch.float16, enabled=True):
         print(classes.dtype, edges.dtype)
         x = model(atom_grid, classes, edges, batch_nodes)
-        loss = torch.nn.functional.mse_loss(x, torch.rand_like(x))
+        loss = criterion(x, torch.rand_like(x))
 
-    loss.backward()
+    loss[0].backward()
 
     torch.cuda.synchronize()
     torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")  # Visualize using https://pytorch.org/memory_viz
@@ -57,8 +58,8 @@ if __name__ == "__main__":
     # Profile execution time
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         x = model(atom_grid, classes, edges, batch_nodes)
-        loss = torch.nn.functional.mse_loss(x, torch.rand_like(x))
-        loss.backward()
+        loss = criterion(x, torch.rand_like(x))
+        loss[0].backward()
     prof.export_chrome_trace("trace.json")
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
 

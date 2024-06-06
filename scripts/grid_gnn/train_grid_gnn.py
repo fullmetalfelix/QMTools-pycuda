@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Dataset
 
 sys.path.append("../..")
 from qmtools.pt.gnn import CLASSES, MPNNEncoder, collate_graphs
-from qmtools.pt.grid import AtomGrid, DensityGridNN
+from qmtools.pt.grid import AtomGrid, DensityGridNN, GridLoss
 
 
 def save_to_xsf(file_path: Path, sample: dict[str, np.ndarray]):
@@ -110,7 +110,7 @@ def run(local_rank, global_rank, world_size):
     model = DistributedDataParallel(model, device_ids=[device], find_unused_parameters=False)
     optimizer = Adam(model.parameters(), lr=5e-4)
     scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: 1 / (1 + nb / 10000))
-    criterion = nn.MSELoss(reduction="mean")
+    criterion = GridLoss(grad_factor=1.0)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     if global_rank == 0:
@@ -149,25 +149,25 @@ def run(local_rank, global_rank, world_size):
 
             # Backward
             optimizer.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
+            scaler.scale(loss[0]).backward()
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
 
-            loss = loss.item()
+            loss = [l.item() for l in loss]
             losses.append(loss)
 
             if global_rank == 0:
-                print(f"{i_batch}: {np.mean(losses)}")
+                print(f"{i_batch}: {np.mean(losses, axis=0)}")
 
             if i_batch % 1000 == 0:
 
-                loss = np.mean(losses)
+                loss = np.mean(losses, axis=0)
                 if world_size > 1:
                     # Take an average of the loss value across parallel ranks
                     loss = torch.tensor(loss).to(device)
                     dist.all_reduce(loss, dist.ReduceOp.SUM)
-                    loss = loss.cpu().item()
+                    loss = loss.cpu().numpy()
                     loss /= world_size
 
                 if global_rank == 0:
@@ -177,7 +177,8 @@ def run(local_rank, global_rank, world_size):
 
                     # Save loss to file
                     with open(loss_log_path_train, "a") as f:
-                        f.write(f"{i_batch},{loss}\n")
+                        loss_str = ",".join(str(l) for l in loss)
+                        f.write(f"{i_batch},{loss_str}\n")
 
                 losses = []
 
@@ -199,24 +200,25 @@ def run(local_rank, global_rank, world_size):
                     q_pred = model(atom_grid, classes, edges, batch_nodes)
                     loss = criterion(q_pred, q_ref)
 
-            loss = loss.item()
+            loss = [l.item() for l in loss]
             losses_val.append(loss)
 
             if global_rank == 0:
-                print(f"val {i_val_batch}: {np.mean(losses_val)}")
+                print(f"val {i_val_batch}: {np.mean(losses_val, axis=0)}")
 
-        val_loss = np.mean(losses_val)
+        val_loss = np.mean(losses_val, axis=0)
         if world_size > 1:
             # Take an average of the loss value across parallel ranks
             val_loss = torch.tensor(val_loss).to(device)
             dist.all_reduce(val_loss, dist.ReduceOp.SUM)
-            val_loss = val_loss.cpu().item()
+            val_loss = val_loss.cpu().numpy()
             val_loss /= world_size
 
         if global_rank == 0:
             # Save validation loss to file
             with open(loss_log_path_val, "a") as f:
-                f.write(f"{i_batch}, {i_epoch},{val_loss}\n")
+                loss_str = ",".join(str(l) for l in val_loss)
+                f.write(f"{i_batch}, {i_epoch},{loss_str}\n")
 
             # Save density from last validation batch
             batch_pred = deepcopy(batch)

@@ -206,3 +206,29 @@ class DensityGridNN(nn.Module):
         x = x.squeeze(1)  # x.shape = (n_batch, nx, ny, nz)
 
         return x
+
+
+def fd_grad(arr: torch.Tensor):
+    """Compute finite-difference gradient by five-point stencil"""
+    # arr.shape = (n_batch, nx, ny, nz)
+    arr = nn.functional.pad(arr, pad=(2, 2, 2, 2, 2, 2), mode="circular")  # arr.shape = (n_batch, nx + 4, ny + 4, nz + 4)
+    # fmt: off
+    grad_x = (arr[:,  :-4, 2:-2, 2:-2] - 8 * arr[:, 1:-3, 2:-2, 2:-2] + 8 * arr[:, 3:-1, 2:-2, 2:-2] - arr[:, 4:  , 2:-2, 2:-2]) / 12
+    grad_y = (arr[:, 2:-2,  :-4, 2:-2] - 8 * arr[:, 2:-2, 1:-3, 2:-2] + 8 * arr[:, 2:-2, 3:-1, 2:-2] - arr[:, 2:-2, 4:  , 2:-2]) / 12
+    grad_z = (arr[:, 2:-2, 2:-2,  :-4] - 8 * arr[:, 2:-2, 2:-2, 1:-3] + 8 * arr[:, 2:-2, 2:-2, 3:-1] - arr[:, 2:-2, 2:-2, 4:  ]) / 12
+    # fmt: on
+    grad = torch.stack((grad_x, grad_y, grad_z), dim=-1)  # grad.shape = (n_batch, nx, ny, nz, 3)
+    return grad
+
+
+class GridLoss(nn.Module):
+
+    def __init__(self, grad_factor: float = 1.0):
+        super().__init__()
+        self.grad_factor = grad_factor
+
+    def forward(self, pred: torch.Tensor, ref: torch.Tensor):
+        mse = nn.functional.mse_loss(pred, ref)
+        mse_grad = nn.functional.mse_loss(fd_grad(pred), fd_grad(ref))
+        loss = mse + self.grad_factor * mse_grad
+        return [loss, mse, mse_grad]
