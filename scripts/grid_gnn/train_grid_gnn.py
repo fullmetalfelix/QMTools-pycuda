@@ -2,6 +2,7 @@ import math
 import os
 import pickle
 import random
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -38,7 +39,7 @@ class DensityDataset(Dataset):
     def __init__(self, data_dir: Path, sample_paths: list[Path], rank: int, world_size: int):
         self.data_dir = data_dir
         # Flooring here can result in leaving samples unused, but gives consistent number of samples across ranks
-        chunk_size = math.floor(len(sample_paths) / world_size) 
+        chunk_size = math.floor(len(sample_paths) / world_size)
         sample_paths = sample_paths[rank * chunk_size : (rank + 1) * chunk_size]
         self.sample_paths = [data_dir / p for p in sample_paths]
 
@@ -89,8 +90,6 @@ def run(local_rank, global_rank, world_size):
 
     checkpoint_dir.mkdir(exist_ok=True)
     densities_dir.mkdir(exist_ok=True)
-    with open(loss_log_path_train, "w"):
-        pass
 
     mpnn_encoder = MPNNEncoder(
         n_class=len(CLASSES),
@@ -107,11 +106,27 @@ def run(local_rank, global_rank, world_size):
         per_channel_scale=True,
         device=device,
     )
-    model = DistributedDataParallel(model, device_ids=[device], find_unused_parameters=False)
     optimizer = Adam(model.parameters(), lr=5e-4)
     scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: 1 / (1 + nb / 10000))
     criterion = GridLoss(grad_factor=1.0)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    checkpoint_nums = sorted([int(re.search("[0-9]+", p.name).group(0)) for p in checkpoint_dir.glob("weights_*.pth")])
+    if len(checkpoint_nums) > 0:
+        init_epoch = checkpoint_nums[-1]
+        if global_rank == 0:
+            print(f"Continuing from epoch {init_epoch}")
+        checkpoint = torch.load(checkpoint_dir / f"weights_{init_epoch}.pth", map_location={"cuda:0": f"cuda:{local_rank}"})
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        scaler.load_state_dict(checkpoint["scaler_state"])
+        i_batch = checkpoint["i_batch"]
+    else:
+        init_epoch = 1
+        i_batch = 0
+
+    model = DistributedDataParallel(model, device_ids=[device], find_unused_parameters=False)
 
     if global_rank == 0:
         print("Encoder parameters:", sum(p.numel() for p in mpnn_encoder.parameters() if p.requires_grad))
@@ -127,8 +142,7 @@ def run(local_rank, global_rank, world_size):
     print(f"{len(dataset_val)} val samples, {math.ceil(len(dataset_val) / batch_size)} batches in an epoch.")
 
     losses = []
-    i_batch = 0
-    for i_epoch in range(1, n_epoch + 1):
+    for i_epoch in range(init_epoch, n_epoch + 1):
 
         if global_rank == 0:
             print(f"Epoch {i_epoch}")
@@ -215,6 +229,7 @@ def run(local_rank, global_rank, world_size):
             val_loss /= world_size
 
         if global_rank == 0:
+
             # Save validation loss to file
             with open(loss_log_path_val, "a") as f:
                 loss_str = ",".join(str(l) for l in val_loss)
@@ -230,8 +245,10 @@ def run(local_rank, global_rank, world_size):
             torch.save(
                 {
                     "model_state": model.module.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
                     "scheduler_state": scheduler.state_dict(),
                     "scaler_state": scaler.state_dict(),
+                    "i_batch": i_batch,
                 },
                 checkpoint_dir / f"weights_{i_epoch}.pth",
             )
