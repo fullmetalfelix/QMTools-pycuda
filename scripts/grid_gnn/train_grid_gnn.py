@@ -113,10 +113,11 @@ def run(local_rank, global_rank, world_size):
 
     checkpoint_nums = sorted([int(re.search("[0-9]+", p.name).group(0)) for p in checkpoint_dir.glob("weights_*.pth")])
     if len(checkpoint_nums) > 0:
-        init_epoch = checkpoint_nums[-1]
+        prev_epoch = checkpoint_nums[-1]
+        init_epoch = prev_epoch + 1
         if global_rank == 0:
             print(f"Continuing from epoch {init_epoch}")
-        checkpoint = torch.load(checkpoint_dir / f"weights_{init_epoch}.pth", map_location={"cuda:0": f"cuda:{local_rank}"})
+        checkpoint = torch.load(checkpoint_dir / f"weights_{prev_epoch}.pth", map_location={"cuda:0": f"cuda:{local_rank}"})
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
         scheduler.load_state_dict(checkpoint["scheduler_state"])
