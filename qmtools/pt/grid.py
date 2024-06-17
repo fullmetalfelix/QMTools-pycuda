@@ -60,6 +60,7 @@ class DensityGridNN(nn.Module):
         proj_channels: list[int],
         cnn_channels: list[int],
         per_channel_scale: bool = False,
+        scale_init_lower_bound = 0.4,
         device: str | torch.device = "cpu",
     ):
         super().__init__()
@@ -90,12 +91,14 @@ class DensityGridNN(nn.Module):
                 )
             )
 
+        a = scale_init_lower_bound
+        b = 1 / a
         if per_channel_scale:
             # Separate scale parameter for each channel in every upsampling stage
-            self.scale = nn.ParameterList([nn.Parameter(0.5 + 0.2 * (torch.rand(c) - 0.5)) for c in proj_channels])
+            self.scale = nn.ParameterList([nn.Parameter(a + (b - a) * torch.rand(c)) for c in proj_channels])
         else:
             # Separate scale parameter for each upsampling stage
-            self.scale = nn.Parameter(0.5 + 0.2 * (torch.rand(self.n_stage) - 0.5))
+            self.scale = nn.Parameter(a + (b - a) * torch.rand(self.n_stage))
 
         self.device = device
         self.to(device)
