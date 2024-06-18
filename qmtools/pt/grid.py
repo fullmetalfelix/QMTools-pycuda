@@ -1,4 +1,5 @@
 from copy import deepcopy
+import math
 import torch
 from torch import nn
 
@@ -26,7 +27,7 @@ class AtomGrid:
 class Lorentzian(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, distance, scale):
+    def forward(ctx, distance: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         # distance.shape = (n_batch, n_voxel, n_atom, 1)
         # scale.shape = (1, 1, 1, c)
         lorentz = scale / (scale * scale + distance * distance)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
@@ -34,7 +35,7 @@ class Lorentzian(torch.autograd.Function):
         return lorentz
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor]:
         distance, scale, lorentz = ctx.saved_tensors
         # distance.shape = (n_batch, n_voxel, n_atom, 1)
         # scale.shape = (1, 1, 1, c)
@@ -49,7 +50,45 @@ class Lorentzian(torch.autograd.Function):
         return grad_distance, grad_scale
 
 
+class Lorentzian2(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, distance: torch.Tensor, scale: torch.Tensor, amplitude: torch.Tensor) -> torch.Tensor:
+        # distance.shape = (n_batch, n_voxel, n_atom, 1)
+        # scale.shape = (1, 1, 1, c)
+        # amplitude.shape = (1, 1, 1, c)
+        lorentz = amplitude / (scale * scale + distance * distance)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
+        ctx.save_for_backward(distance, scale, amplitude, lorentz)
+        return lorentz
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        distance, scale, amplitude, lorentz = ctx.saved_tensors
+        # distance.shape = (n_batch, n_voxel, n_atom, 1)
+        # scale.shape = (1, 1, 1, c)
+        # amplitude.shape = (1, 1, 1, c)
+        # lorentz.shape = (n_batch, n_voxel, n_atom, c)
+        # grad_output.shape = (n_batch, n_voxel, n_atom, c)
+        grad_distance = grad_scale = grad_amplitude = None
+        a_inv = 1 / amplitude
+        if ctx.needs_input_grad[0]:
+            grad_distance = -2 * a_inv * grad_output
+            grad_distance *= distance
+            grad_distance *= lorentz
+            grad_distance *= lorentz
+        if ctx.needs_input_grad[1]:
+            grad_scale = -2 * scale * a_inv * grad_output
+            grad_scale *= lorentz
+            grad_scale *= lorentz
+        if ctx.needs_input_grad[2]:
+            grad_amplitude = grad_output.clone()
+            grad_amplitude *= a_inv
+            grad_amplitude *= lorentz
+        return grad_distance, grad_scale, grad_amplitude
+
+
 lorentzian = Lorentzian.apply
+lorentzian2 = Lorentzian2.apply
 
 
 class DensityGridNN(nn.Module):
@@ -59,8 +98,9 @@ class DensityGridNN(nn.Module):
         mpnn: MPNNEncoder,
         proj_channels: list[int],
         cnn_channels: list[int],
+        lorentz_type: int = 1,
         per_channel_scale: bool = False,
-        scale_init_lower_bound = 0.4,
+        scale_init_bounds: tuple[int, int] = (0.5, 1.5),
         device: str | torch.device = "cpu",
     ):
         super().__init__()
@@ -91,14 +131,22 @@ class DensityGridNN(nn.Module):
                 )
             )
 
-        a = scale_init_lower_bound
-        b = 1 / a
-        if per_channel_scale:
-            # Separate scale parameter for each channel in every upsampling stage
-            self.scale = nn.ParameterList([nn.Parameter(a + (b - a) * torch.rand(c)) for c in proj_channels])
+        self.lorentz_type = lorentz_type
+        if lorentz_type == 1:
+            a = scale_init_bounds[0]
+            b = 1 / a
+            self.amplitude = None
+            if per_channel_scale:
+                # Separate scale parameter for each channel in every upsampling stage
+                self.scale = nn.ParameterList([nn.Parameter(a + (b - a) * torch.rand(c)) for c in proj_channels])
+            else:
+                # Separate scale parameter for each upsampling stage
+                self.scale = nn.Parameter(a + (b - a) * torch.rand(self.n_stage))
         else:
-            # Separate scale parameter for each upsampling stage
-            self.scale = nn.Parameter(a + (b - a) * torch.rand(self.n_stage))
+            c, d = scale_init_bounds
+            a = 3 * math.sqrt(c**3 * d**3 / (c**2 + c * d + d**2))
+            self.amplitude = nn.ParameterList([nn.Parameter(2 * a * (torch.rand(n_ch) - 0.5)) for n_ch in proj_channels])
+            self.scale = nn.ParameterList([nn.Parameter(c + (d - c) * torch.rand(n_ch)) for n_ch in proj_channels])
 
         self.device = device
         self.to(device)
@@ -131,12 +179,6 @@ class DensityGridNN(nn.Module):
         self, atom_grid: AtomGrid, stage: int, dtype: torch.dtype, batch_nodes: list[int]
     ) -> tuple[torch.Tensor, list[int]]:
 
-        scale = self.scale[stage].type(dtype)
-        if scale.shape != ():
-            scale = scale[None, None, None]  # scale.shape = (1, 1, 1, c)
-        else:
-            scale = scale[None, None, None, None]  # scale.shape = (1, 1, 1, 1) (c=1)
-
         downscale_factor = 2 ** (self.n_stage - stage - 1)
         n_xyz = [s // downscale_factor for s in atom_grid.grid_shape]
         l = atom_grid.lattice[0].diag()  # The lattice is assumed to be the same size for all batch items here
@@ -155,7 +197,18 @@ class DensityGridNN(nn.Module):
         for i_batch, n_node in enumerate(batch_nodes):
             distance[i_batch, :, n_node:, :] = torch.inf
 
-        lorentz = lorentzian(distance, scale)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
+        scale = self.scale[stage].type(dtype)
+        if scale.shape != ():
+            scale = scale[None, None, None]  # scale.shape = (1, 1, 1, c)
+        else:
+            scale = scale[None, None, None, None]  # scale.shape = (1, 1, 1, 1) (c=1)
+
+        if self.lorentz_type == 1:
+            lorentz = lorentzian(distance, scale)  # lorenz.shape = (n_batch, n_voxel, n_atom, c)
+        else:
+            amplitude = self.amplitude[stage].type(dtype)
+            amplitude = amplitude[None, None, None]  # amplitude.shape = (1, 1, 1, c)
+            lorentz = lorentzian2(distance, scale, amplitude)
 
         return lorentz, n_xyz
 

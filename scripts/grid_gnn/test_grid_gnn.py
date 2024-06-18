@@ -7,7 +7,7 @@ from torch.profiler import ProfilerActivity, profile, record_function
 sys.path.append("../..")
 
 from qmtools.pt.gnn import MPNNEncoder
-from qmtools.pt.grid import AtomGrid, DensityGridNN, GridLoss, lorentzian
+from qmtools.pt.grid import AtomGrid, DensityGridNN, GridLoss, lorentzian, lorentzian2
 
 if __name__ == "__main__":
 
@@ -18,6 +18,7 @@ if __name__ == "__main__":
         mpnn_encoder,
         proj_channels=[64, 32, 2],
         cnn_channels=[64, 32, 8],
+        lorentz_type=2,
         per_channel_scale=True,
         device=device,
     )
@@ -66,9 +67,15 @@ if __name__ == "__main__":
     # Check correctness of lorentzian gradient calculation
     distance = torch.rand(1, 100, 15, 1, requires_grad=True, dtype=torch.float64)
     scale = torch.rand(1, 1, 1, 10, requires_grad=True, dtype=torch.float64)
+    amplitude = torch.rand(1, 1, 1, 10, requires_grad=True, dtype=torch.float64)
 
     torch.autograd.gradcheck(lorentzian, (distance, scale))
     torch.autograd.gradgradcheck(lorentzian, (distance, scale))
+    torch.autograd.gradcheck(lorentzian2, (distance, scale, amplitude))
+    torch.autograd.gradgradcheck(lorentzian2, (distance, scale, amplitude))
 
     l = lorentzian(distance, scale)
+    assert l.shape == (1, 100, 15, 10)
+
+    l = lorentzian2(distance, scale, amplitude)
     assert l.shape == (1, 100, 15, 10)

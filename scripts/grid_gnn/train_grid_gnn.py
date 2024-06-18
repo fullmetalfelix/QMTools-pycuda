@@ -72,7 +72,7 @@ def run(local_rank, global_rank, world_size):
     dist.init_process_group("nccl")
 
     device = local_rank
-    n_epoch = 25
+    n_epoch = 50
     batch_size = 4
     use_amp = True
     data_dir = Path("/scratch/work/oinonen1/density_db")
@@ -103,7 +103,8 @@ def run(local_rank, global_rank, world_size):
         mpnn_encoder,
         proj_channels=[64, 16, 4],
         cnn_channels=[128, 64, 32],
-        per_channel_scale=True,
+        lorentz_type=2,
+        scale_init_bounds=(0.5, 1.5),
         device=device,
     )
     optimizer = Adam(model.parameters(), lr=5e-4)
@@ -188,7 +189,9 @@ def run(local_rank, global_rank, world_size):
                 if global_rank == 0:
 
                     print("Current learning rate:", scheduler.get_last_lr())
-                    print([s for s in model.module.scale])
+                    print(list(model.module.scale))
+                    if model.module.amplitude:
+                        print(list(model.module.amplitude))
 
                     # Save loss to file
                     with open(loss_log_path_train, "a") as f:
