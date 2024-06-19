@@ -63,6 +63,12 @@ class DensityDataset(Dataset):
     def shuffle(self):
         random.shuffle(self.sample_paths)
 
+def lr_schedule(i_batch, lr_init=1e-10, T_warm=1000, T_decay=10000):
+    if i_batch <= T_warm:
+        lr = lr_init + (1 - lr_init) * (i_batch / T_warm)
+    else:
+        lr = 1 / (1 + (i_batch - T_warm) / T_decay)
+    return lr
 
 def run(local_rank, global_rank, world_size):
 
@@ -107,8 +113,8 @@ def run(local_rank, global_rank, world_size):
         scale_init_bounds=(0.5, 1.5),
         device=device,
     )
-    optimizer = Adam(model.parameters(), lr=5e-4)
-    scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: 1 / (1 + nb / 10000))
+    optimizer = Adam(model.parameters(), lr=4e-3)
+    scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: lr_schedule(nb, T_warm=4000, T_decay=10000))
     criterion = GridLoss(grad_factor=1.0)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
