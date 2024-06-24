@@ -101,6 +101,7 @@ class DensityGridNN(nn.Module):
         lorentz_type: int = 1,
         per_channel_scale: bool = False,
         scale_init_bounds: tuple[int, int] = (0.5, 1.5),
+        activation: nn.Module = nn.ReLU(),
         device: str | torch.device = "cpu",
     ):
         super().__init__()
@@ -125,7 +126,7 @@ class DensityGridNN(nn.Module):
                         kernel_size=3,
                         depth=2,
                         padding_mode="circular",
-                        activation=nn.ReLU(),
+                        activation=activation,
                     ),
                     nn.Conv3d(cnn_channels[stage], cnn_channels[stage + 1], kernel_size=1),
                 )

@@ -111,9 +111,10 @@ def run(local_rank, global_rank, world_size):
         cnn_channels=[128, 64, 32],
         lorentz_type=2,
         scale_init_bounds=(0.5, 1.5),
+        activation=nn.Tanh(),
         device=device,
     )
-    optimizer = Adam(model.parameters(), lr=4e-3)
+    optimizer = Adam(model.parameters(), lr=5e-4)
     scheduler = lr_scheduler.LambdaLR(optimizer, lambda nb: lr_schedule(nb, T_warm=4000, T_decay=10000))
     criterion = GridLoss(grad_factor=1.0)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
