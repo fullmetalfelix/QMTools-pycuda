@@ -111,7 +111,9 @@ def run(local_rank, global_rank, world_size):
         cnn_channels=[128, 64, 32],
         lorentz_type=2,
         scale_init_bounds=(0.5, 1.5),
-        activation=nn.Tanh(),
+        activation=nn.ReLU(),
+        kernel_size=1,
+        interpolation_mode="nearest",
         device=device,
     )
     optimizer = Adam(model.parameters(), lr=5e-4)

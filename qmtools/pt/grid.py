@@ -101,7 +101,9 @@ class DensityGridNN(nn.Module):
         lorentz_type: int = 1,
         per_channel_scale: bool = False,
         scale_init_bounds: tuple[int, int] = (0.5, 1.5),
+        kernel_size: int = 3,
         activation: nn.Module = nn.ReLU(),
+        interpolation_mode: str = "trilinear",
         device: str | torch.device = "cpu",
     ):
         super().__init__()
@@ -110,6 +112,7 @@ class DensityGridNN(nn.Module):
 
         self.mpnn = mpnn
         self.n_stage = len(proj_channels)
+        self.interpolation_mode = interpolation_mode
 
         self.node_projections = nn.ModuleList([])
         self.proj_convs = nn.ModuleList([])
@@ -123,7 +126,7 @@ class DensityGridNN(nn.Module):
                     ResBlock(
                         cnn_channels[stage],
                         cnn_channels[stage],
-                        kernel_size=3,
+                        kernel_size=kernel_size,
                         depth=2,
                         padding_mode="circular",
                         activation=activation,
@@ -255,7 +258,12 @@ class DensityGridNN(nn.Module):
                 # from the previous stage needs to be upscaled in order to be of the same shape as the current
                 # projection.
                 # x.shape: (n_batch, c, nx / 2, ny / 2, nz / 2) -> (n_batch, c, nx, ny, nz)
-                x = nn.functional.interpolate(x, size=x_grid.shape[2:], mode="trilinear", align_corners=False)
+                x = nn.functional.interpolate(
+                    x,
+                    size=x_grid.shape[2:],
+                    mode=self.interpolation_mode,
+                    align_corners=(None if self.interpolation_mode == "nearest" else False),
+                )
                 x = x + x_grid
 
             x = self.conv_blocks[stage](x)  # x.shape = (n_batch, c_next, nx, ny, nz)
