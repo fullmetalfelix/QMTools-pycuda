@@ -225,7 +225,7 @@ def run(local_rank, global_rank, world_size):
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
                 with torch.no_grad():
                     q_pred = model(atom_grid, classes, edges, batch_nodes)
-                    loss = criterion(q_pred, q_ref)
+                    loss = criterion(q_pred, q_ref, compute_mae=True)
 
             loss = [l.item() for l in loss]
             losses_val.append(loss)

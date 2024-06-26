@@ -292,8 +292,19 @@ class GridLoss(nn.Module):
         super().__init__()
         self.grad_factor = grad_factor
 
-    def forward(self, pred: torch.Tensor, ref: torch.Tensor):
+    def forward(self, pred: torch.Tensor, ref: torch.Tensor, compute_mae=False):
+        
+        grad_pred = fd_grad(pred)
+        grad_ref = fd_grad(ref)
         mse = nn.functional.mse_loss(pred, ref)
-        mse_grad = nn.functional.mse_loss(fd_grad(pred), fd_grad(ref))
+        mse_grad = nn.functional.mse_loss(grad_pred, grad_ref)
+
         loss = mse + self.grad_factor * mse_grad
-        return [loss, mse, mse_grad]
+        loss = [loss, mse, mse_grad]
+
+        if compute_mae:
+            mae = nn.functional.l1_loss(pred, ref)
+            mae_grad = nn.functional.l1_loss(grad_pred, grad_ref)
+            loss.extend([mae, mae_grad])
+
+        return loss
